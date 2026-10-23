@@ -1,0 +1,15 @@
+node_modules
+dist
+test-results
+playwright-report
+blob-report
+.DS_Store
+*.local
+public/pdfjs
+public/tesseract
+public/ffmpeg
+public/onnx
+.vite
+coverage
+*.wav
+!tests/fixtures/**
