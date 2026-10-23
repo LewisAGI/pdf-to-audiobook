@@ -146,6 +146,9 @@ test('clears the API key when the endpoint origin changes', async ({ page }) => 
   await page.getByRole('button', { name: 'Summary' }).click();
   await page.getByLabel('Endpoint').fill('https://one.example/v1');
   await page.getByLabel('API key').fill('sk-one-secret');
+  await page.getByRole('button', { name: 'API summary' }).click();
+  await expect(page.getByLabel('API key')).toHaveValue('sk-one-secret');
+  await expect(page.getByLabel('Endpoint')).toHaveValue('https://one.example/v1');
   await page.getByRole('button', { name: 'Save' }).click();
   await page.getByRole('button', { name: 'More' }).click();
   await page.getByRole('button', { name: 'Summary' }).click();
@@ -158,8 +161,9 @@ test('clears the API key when the endpoint origin changes', async ({ page }) => 
 });
 
 test('keeps the neural engine when jumping chapters during generation', async ({ page }) => {
+  test.setTimeout(60_000);
   await page.addInitScript(() => {
-    localStorage.setItem('pta-tts', 'slow');
+    localStorage.setItem('pta-tts', 'worker');
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Add' }).click();
@@ -169,10 +173,16 @@ test('keeps the neural engine when jumping chapters during generation', async ({
   await expect(page.locator('.play .stat')).toBeVisible();
   await page.getByRole('button', { name: 'Chapters' }).click();
   await page.getByRole('button', { name: 'Departure' }).click();
-  await expect(page.locator('.chapter-name')).toHaveText('Departure');
-  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.locator('.chapter-name')).toHaveText('Departure', { timeout: 1_000 });
+  const speaking = page.locator('main.shell');
+  await expect(speaking).toHaveAttribute('data-engine', 'kokoro');
+  const chapterId = await speaking.getAttribute('data-chapter');
+  expect(chapterId).toBeTruthy();
+  await expect(speaking).toHaveAttribute('data-speaking', chapterId!, { timeout: 1_600 });
   await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 15_000 });
+  const duration = await page.evaluate(() => document.querySelector('audio')?.duration ?? 0);
+  expect(duration).toBeGreaterThan(0.25);
   await page.getByRole('button', { name: 'More' }).click();
   await page.getByRole('button', { name: 'Export' }).click();
   await expect(page.getByText("Web Speech audio can't be exported")).toHaveCount(0);
@@ -182,6 +192,7 @@ test('imports a PDF after an offline reload', async ({ page }) => {
   test.setTimeout(180_000);
   await page.addInitScript(() => {
     localStorage.setItem('pta-sw', '1');
+    localStorage.setItem('pta-tts', 'worker');
   });
   await page.goto('/');
   await page.evaluate(async () => {
@@ -198,4 +209,53 @@ test('imports a PDF after an offline reload', async ({ page }) => {
   await page.getByRole('button', { name: 'Add' }).click();
   await page.locator('#pdf-file').setInputFiles(fixture);
   await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+});
+
+test('serves third-party notices as text while the service worker controls the page', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-sw', '1');
+  });
+  await page.goto('/');
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await page.reload();
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) throw new Error('service worker is not controlling the page');
+  });
+  const response = await page.goto('/THIRD_PARTY_NOTICES.txt');
+  expect(response?.headers()['content-type'] ?? '').toContain('text/plain');
+  const body = await response?.text();
+  expect(body).toContain('lamejs');
+  expect(body).toContain('LGPL-3.0');
+  expect(body).not.toContain('<div id="app">');
+});
+
+test('shows a storage message instead of switching voices when the disk is full', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-tts', 'worker');
+    localStorage.setItem('pta-quota', '0');
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Add' }).click();
+  await page.locator('#pdf-file').setInputFiles(fixture);
+  await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByText('Not enough storage')).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+});
+
+test('hides a touch tooltip when the pointer is released', async ({ page }) => {
+  await page.goto('/');
+  const add = page.getByRole('button', { name: 'Add' });
+  await add.dispatchEvent('pointerdown', { pointerType: 'touch' });
+  await expect(page.locator('.tooltip')).toBeVisible();
+  await add.dispatchEvent('pointerup', { pointerType: 'touch' });
+  await expect(page.locator('.tooltip')).toBeHidden();
 });

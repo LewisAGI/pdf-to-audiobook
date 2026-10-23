@@ -368,7 +368,7 @@ export class App {
       ${iconButton('save-llm', 'Save', icons.check)}`;
     }
     if (this.sheet.name === 'about') {
-      return `<a class="icon-btn" href="/THIRD_PARTY_NOTICES" data-tip="Notices" aria-label="Third-party notices">${icons.book}</a>`;
+      return `<a class="icon-btn" href="/THIRD_PARTY_NOTICES.txt" data-tip="Notices" aria-label="Third-party notices">${icons.book}</a>`;
     }
     if (this.sheet.name === 'storage') return `<div id="storage-slot" class="stat">…</div>`;
     if (this.sheet.name === 'delete') return iconButton('confirm-delete', 'Delete', icons.trash);
@@ -399,6 +399,8 @@ export class App {
     else if (action === 'chapters') this.openSheet({ name: 'chapters' });
     else if (action === 'chapter') this.openSheet({ name: 'chapter', index });
     else if (action === 'jump') {
+      this.index = index;
+      this.shownTime = 0;
       this.closeSheet();
       await this.playChapter(index, 0);
     } else if (action === 'rename') this.openSheet({ name: 'rename', index });
@@ -682,6 +684,7 @@ export class App {
       this.speak(chapter, time);
       return;
     }
+    this.render();
     this.armPlayback();
     try {
       const wav = await this.ensureAudio(chapter);
@@ -809,6 +812,9 @@ export class App {
       priorRate: prior?.sampleRate,
       onProgress: (progress) => this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', progress.ratio || 0.04),
       onSentence: async (update) => {
+        if (this.chapters[this.index]?.id === chapter.id) {
+          this.root.querySelector('main.shell')?.setAttribute('data-speaking', chapter.id);
+        }
         latest = update.samples;
         latestRate = update.sampleRate;
         sentenceTotal = update.total;

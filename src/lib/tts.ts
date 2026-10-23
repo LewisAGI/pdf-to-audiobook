@@ -15,7 +15,7 @@ export type SentenceUpdate = {
 };
 
 type WorkerIn =
-  | { type: 'generate'; jobId: string; text: string; voice: string; speed: number; resumeFrom: number }
+  | { type: 'generate'; jobId: string; text: string; voice: string; speed: number; resumeFrom: number; synthetic?: boolean }
   | { type: 'cancel'; jobId: string };
 
 type WorkerOut =
@@ -29,10 +29,11 @@ export function stubAllowed(env: { DEV?: boolean; MODE?: string } = import.meta.
   return Boolean(env.DEV) || env.MODE === 'test';
 }
 
-export function ttsMode(): 'off' | 'fast' | 'slow' {
+export function ttsMode(): 'off' | 'fast' | 'slow' | 'worker' {
   if (!stubAllowed()) return 'off';
   try {
     const flag = localStorage.getItem('pta-tts') || new URLSearchParams(location.search).get('tts') || '';
+    if (flag === 'worker') return 'worker';
     if (flag === 'slow') return 'slow';
     if (flag === 'stub') return 'fast';
   } catch {
@@ -133,6 +134,7 @@ export class SpeechEngine {
         voice: options.voice,
         speed: options.speed ?? 1,
         resumeFrom: options.resumeFrom ?? 0,
+        synthetic: mode === 'worker',
       } satisfies WorkerIn);
     });
     return result;

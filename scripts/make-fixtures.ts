@@ -170,6 +170,27 @@ async function referencesPdf(): Promise<Uint8Array> {
   return doc.save();
 }
 
+async function paperPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Wide Paper');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  page.drawText('TITLEBLOCK birds of the wide estuary', { x: 72, y: 700, size: 18, font: bold });
+  page.drawText('Abstract line stays across the whole page from shore to shore.', { x: 72, y: 660, size: 12, font });
+  page.drawText('The abstract keeps one wide measure above the columns.', { x: 72, y: 642, size: 12, font });
+  page.drawText('LEFTPAPER', { x: 72, y: 580, size: 20, font: bold });
+  page.drawText('Left paper stays.', { x: 72, y: 548, size: 12, font });
+  page.drawText('The left paper column kept reading.', { x: 72, y: 530, size: 12, font });
+  page.drawText('LEFTPAPEREND', { x: 72, y: 490, size: 20, font: bold });
+  page.drawText('RIGHTPAPER', { x: 340, y: 580, size: 20, font: bold });
+  page.drawText('Right paper stays.', { x: 340, y: 548, size: 12, font });
+  page.drawText('The right paper column kept reading.', { x: 340, y: 530, size: 12, font });
+  page.drawText('RIGHTPAPEREND', { x: 340, y: 490, size: 20, font: bold });
+  page.drawText('CAPTIONBLOCK spans the page under both columns.', { x: 72, y: 200, size: 12, font });
+  return doc.save();
+}
+
 async function columnsPdf(): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   doc.setTitle('Two Columns');
@@ -196,4 +217,5 @@ await writeFile(path.join(outDir, 'plain.pdf'), await plainPdf());
 await writeFile(path.join(outDir, 'scanned.pdf'), await scannedPdf());
 await writeFile(path.join(outDir, 'references.pdf'), await referencesPdf());
 await writeFile(path.join(outDir, 'columns.pdf'), await columnsPdf());
+await writeFile(path.join(outDir, 'paper.pdf'), await paperPdf());
 console.log('fixtures written');

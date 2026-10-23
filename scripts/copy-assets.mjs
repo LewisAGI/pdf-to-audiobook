@@ -68,6 +68,11 @@ for (const name of [
   await copyFile(path.join(nm, 'tesseract.js-core', name), path.join(root, 'public/tesseract', name));
 }
 
+await copyFile(
+  path.join(nm, '@ffmpeg/core/dist/esm/ffmpeg-core.js'),
+  path.join(root, 'public/ffmpeg/ffmpeg-core.js'),
+);
+
 const onnxDist = path.join(nm, 'onnxruntime-web/dist');
 for (const name of [
   'ort-wasm-simd-threaded.wasm',

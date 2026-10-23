@@ -162,7 +162,21 @@ function isQuotaError(error: unknown): boolean {
   return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || name === 'StorageQuotaError';
 }
 
+function testQuotaCeiling(): number | null {
+  if (!(import.meta.env.DEV || import.meta.env.MODE === 'test')) return null;
+  try {
+    const raw = localStorage.getItem('pta-quota');
+    if (raw == null || raw === '') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 async function ensureRoom(bytes: number): Promise<void> {
+  const ceiling = testQuotaCeiling();
+  if (ceiling != null && bytes > ceiling) throw new StorageQuotaError();
   if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return;
   const estimate = await navigator.storage.estimate();
   const quota = estimate.quota ?? 0;

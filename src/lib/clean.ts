@@ -158,11 +158,48 @@ function lineFromGlyphs(page: RawPage, group: Glyph[]): Line | null {
   };
 }
 
+function bandIsFullWidth(glyphs: Glyph[], pageWidth: number): boolean {
+  if (!glyphs.length || pageWidth <= 0) return false;
+  const sorted = [...glyphs].sort((a, b) => a.x - b.x);
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  if (last.x + last.width - first.x < pageWidth * 0.55) return false;
+  let largest = 0;
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1]!;
+    const gap = sorted[index]!.x - (previous.x + previous.width);
+    if (gap > largest) largest = gap;
+  }
+  return largest < pageWidth * 0.08;
+}
+
+function glyphWords(glyphs: Glyph[]): string[] {
+  return glyphs
+    .map((glyph) => glyph.text.trim())
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+function isTableRow(left: Glyph[], right: Glyph[]): boolean {
+  if (!left.length || !right.length) return false;
+  const leftWords = glyphWords(left);
+  const rightWords = glyphWords(right);
+  if (!leftWords.length || !rightWords.length || leftWords.length > 2 || rightWords.length > 2) return false;
+  const numeric = (words: string[]) => words.every((word) => /^[\d.,]+$/.test(word));
+  return numeric(leftWords) || numeric(rightWords);
+}
+
 function columnGutter(page: RawPage, glyphs: Glyph[]): number | null {
-  const body = glyphs.filter((glyph) => {
-    const y = page.height > 0 ? glyph.y / page.height : 0;
-    return y > 0.05 && y < 0.95;
-  });
+  const body: Glyph[] = [];
+  for (const band of bandGlyphs(glyphs)) {
+    const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
+    if (y <= 0.05 || y >= 0.95) continue;
+    if (bandIsFullWidth(band, page.width)) continue;
+    body.push(...band);
+  }
   if (page.width < 240 || body.length < 4) return null;
   const bins = 48;
   const counts = new Array<number>(bins).fill(0);
@@ -230,21 +267,17 @@ export function linesFromPage(page: RawPage): Line[] {
       else footer.push(line);
       continue;
     }
-    if (overlapsGutter(band, gutter, page.width)) {
+    const leftGlyphs = band.filter((glyph) => glyph.x + glyph.width / 2 < gutter);
+    const rightGlyphs = band.filter((glyph) => glyph.x + glyph.width / 2 >= gutter);
+    if (overlapsGutter(band, gutter, page.width) || isTableRow(leftGlyphs, rightGlyphs)) {
       const line = lineFromGlyphs(page, band);
       if (!line) continue;
       pushCurrent();
       segments.push({ full: line, left: [], right: [] });
       continue;
     }
-    const left = lineFromGlyphs(
-      page,
-      band.filter((glyph) => glyph.x + glyph.width / 2 < gutter),
-    );
-    const right = lineFromGlyphs(
-      page,
-      band.filter((glyph) => glyph.x + glyph.width / 2 >= gutter),
-    );
+    const left = lineFromGlyphs(page, leftGlyphs);
+    const right = lineFromGlyphs(page, rightGlyphs);
     if (left) current.left.push(left);
     if (right) current.right.push(right);
   }
@@ -414,15 +447,23 @@ export function linesToParagraphs(lines: Line[]): Paragraph[] {
   return paragraphs;
 }
 
+function isReferencesHeading(paragraph: Paragraph): boolean {
+  const text = paragraph.text.trim();
+  return REF_HEAD.test(text) && (paragraph.kind === 'heading' || text.length < 48);
+}
+
 export function stripReferences(paragraphs: Paragraph[]): Paragraph[] {
-  const start = paragraphs.findIndex((paragraph) => {
-    const text = paragraph.text.trim();
-    return REF_HEAD.test(text) && (paragraph.kind === 'heading' || text.length < 48);
-  });
-  if (start < 0) return paragraphs;
-  const next = paragraphs.findIndex((paragraph, index) => index > start && paragraph.kind === 'heading');
-  if (next < 0) return paragraphs.slice(0, start);
-  return [...paragraphs.slice(0, start), ...paragraphs.slice(next)];
+  const kept: Paragraph[] = [];
+  let skipping = false;
+  for (const paragraph of paragraphs) {
+    if (isReferencesHeading(paragraph)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && paragraph.kind === 'heading') skipping = false;
+    if (!skipping) kept.push(paragraph);
+  }
+  return kept;
 }
 
 export function cleanPages(pages: RawPage[]): Paragraph[] {

@@ -42,19 +42,46 @@ function ffmpegWorkerAssets(): Plugin {
   };
 }
 
-function securityHeaders(): Plugin {
-  const headers: Record<string, string> = {};
-  for (const line of readFileSync(new URL('./public/_headers', import.meta.url), 'utf8').split('\n')) {
-    const match = line.match(/^\s{2}([^:]+):\s*(.*)$/);
-    if (match?.[1] && match[2]) headers[match[1]] = match[2].trim();
+function headerRules(source: string): { path: string; headers: Record<string, string> }[] {
+  const rules: { path: string; headers: Record<string, string> }[] = [];
+  let current: { path: string; headers: Record<string, string> } | null = null;
+  for (const line of source.split('\n')) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    if (!line.startsWith(' ') && !line.startsWith('\t')) {
+      current = { path: line.trim(), headers: {} };
+      rules.push(current);
+      continue;
+    }
+    const match = line.match(/^\s+([^:]+):\s*(.*)$/);
+    if (current && match?.[1] && match[2]) current.headers[match[1]] = match[2].trim();
   }
+  return rules;
+}
+
+function securityHeaders(): Plugin {
+  const rules = headerRules(readFileSync(new URL('./public/_headers', import.meta.url), 'utf8'));
   return {
     name: 'security-headers',
     configurePreviewServer(server) {
-      server.middlewares.use((_req, res, next) => {
-        for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+      server.middlewares.use((req, res, next) => {
+        const url = (req.url ?? '/').split('?')[0] || '/';
+        for (const rule of rules) {
+          if (rule.path !== '/*' && rule.path !== url) continue;
+          for (const [key, value] of Object.entries(rule.headers)) res.setHeader(key, value);
+        }
         next();
       });
+    },
+  };
+}
+
+function dropBundledOrtWasm(): Plugin {
+  return {
+    name: 'drop-bundled-ort-wasm',
+    generateBundle(_options, bundle) {
+      for (const name of Object.keys(bundle)) {
+        if (/ort-wasm.*\.wasm$/.test(name)) delete bundle[name];
+      }
     },
   };
 }
@@ -63,12 +90,13 @@ export default defineConfig({
   plugins: [
     bundleLamejs(),
     ffmpegWorkerAssets(),
+    dropBundledOrtWasm(),
     sameOriginStyles(),
     securityHeaders(),
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: false,
-      includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png'],
+      includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'THIRD_PARTY_NOTICES.txt'],
       manifest: {
         name: 'pdf-to-audiobook',
         short_name: 'Audiobook',
@@ -88,7 +116,7 @@ export default defineConfig({
         globIgnores: ['**/onnx/**/*.wasm', '**/ort-wasm*.wasm'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/pdfjs\//, /^\/tesseract\//, /^\/tessdata\//, /^\/onnx\//],
+        navigateFallbackDenylist: [/^\/pdfjs\//, /^\/tesseract\//, /^\/tessdata\//, /^\/onnx\//, /^\/THIRD_PARTY_NOTICES\.txt$/],
         runtimeCaching: [
           {
             urlPattern: /\/onnx\/.+\.(?:wasm|mjs)$/,

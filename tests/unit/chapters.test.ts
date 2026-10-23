@@ -93,6 +93,21 @@ describe('chapter detection', () => {
     await pdf.destroy();
   });
 
+  it('reads a full-width title and caption around two columns', async () => {
+    const { pdf, paragraphs } = await parsed('paper.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('TITLEBLOCK')).toBeGreaterThanOrEqual(0);
+    expect(at('TITLEBLOCK')).toBeLessThan(at('Abstract'));
+    expect(at('Abstract')).toBeLessThan(at('LEFTPAPER'));
+    expect(at('LEFTPAPER')).toBeLessThan(at('LEFTPAPEREND'));
+    expect(at('LEFTPAPEREND')).toBeLessThan(at('RIGHTPAPER'));
+    expect(at('RIGHTPAPER')).toBeLessThan(at('RIGHTPAPEREND'));
+    expect(at('RIGHTPAPEREND')).toBeLessThan(at('CAPTIONBLOCK'));
+    expect(text).not.toContain('LEFTPAPER RIGHTPAPER');
+    await pdf.destroy();
+  });
+
   it('marks the scanned fixture as an OCR page', async () => {
     const data = new Uint8Array(await readFile(new URL('../fixtures/scanned.pdf', import.meta.url)));
     const pdf = await parsePdf(data, pdfAssets);

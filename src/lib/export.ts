@@ -109,7 +109,7 @@ async function encodeWithFfmpeg(samples: Float32Array, sampleRate: number, chapt
   };
   await ffmpeg.load({
     classWorkerURL: worker,
-    coreURL: await toBlob(`${base}/ffmpeg-core.js`, 'text/javascript'),
+    coreURL: new URL('/ffmpeg/ffmpeg-core.js', location.origin).href,
     wasmURL: await toBlob(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
   });
   const wav = encodeWav(samples, sampleRate);

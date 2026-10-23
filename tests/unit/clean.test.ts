@@ -183,6 +183,67 @@ describe('cleaning', () => {
     expect(lines).toEqual(['LEFT_ALPHA', 'left river kept', 'LEFT_OMEGA', 'RIGHT_ALPHA', 'right maps kept', 'RIGHT_OMEGA']);
   });
 
+  it('drops every references heading and keeps the chapters between them', () => {
+    const pasted = cleanPlainText(
+      'One\n\nThe ferry left.\n\nReferences\n\nSmith, A. 1999.\n\nTwo\n\nThe road held.\n\nBibliography\n\nJones, B. 2001.\n\nThree\n\nThey came home.',
+    );
+    const joined = pasted.map((paragraph) => paragraph.text).join('\n');
+    expect(joined).toContain('The ferry left');
+    expect(joined).toContain('The road held');
+    expect(joined).toContain('They came home');
+    expect(joined).not.toContain('Smith');
+    expect(joined).not.toContain('Jones');
+  });
+
+  it('reads columns around a full-width title and keeps table rows intact', () => {
+    const glyph = (text: string, x: number, y: number, width: number, size = 12): RawPage['glyphs'][number] => ({
+      text,
+      x,
+      y,
+      width,
+      height: size,
+      fontSize: size,
+      fontName: size >= 18 ? 'Times-Bold' : 'Times',
+    });
+    const lines = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('TITLEBLOCK wide title', 72, 80, 470, 18),
+        glyph('Abstract line stays across the whole page.', 72, 120, 470),
+        glyph('LEFTPAPER', 72, 200, 90, 20),
+        glyph('left column kept reading here.', 72, 230, 180),
+        glyph('LEFTPAPEREND', 72, 270, 110, 20),
+        glyph('RIGHTPAPER', 360, 200, 100, 20),
+        glyph('right column kept reading here.', 360, 230, 190),
+        glyph('RIGHTPAPEREND', 360, 270, 120, 20),
+        glyph('CAPTIONBLOCK spans the page under both columns.', 72, 420, 470),
+        glyph('Heron', 72, 500, 48),
+        glyph('14', 360, 500, 20),
+        glyph('Plover', 72, 524, 52),
+        glyph('40', 360, 524, 20),
+      ],
+    }).map((line) => line.text);
+    expect(lines.map((line) => line.split(' ')[0])).toEqual([
+      'TITLEBLOCK',
+      'Abstract',
+      'LEFTPAPER',
+      'left',
+      'LEFTPAPEREND',
+      'RIGHTPAPER',
+      'right',
+      'RIGHTPAPEREND',
+      'CAPTIONBLOCK',
+      'Heron',
+      'Plover',
+    ]);
+    expect(lines[9]).toBe('Heron 14');
+    expect(lines[10]).toBe('Plover 40');
+    expect(lines.join('\n')).not.toContain('Heron Plover');
+  });
+
   it('keeps a heading on its own paragraph', () => {
     const body: Line = {
       text: 'The river kept its name through the valley.',

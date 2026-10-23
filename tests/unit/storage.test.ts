@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { materialize } from '../../src/lib/chapters';
 import { tone } from '../../src/lib/audio';
 import {
@@ -14,8 +14,14 @@ import {
   savePosition,
   savePreferences,
   audioKey,
+  writeAudioBytes,
+  StorageQuotaError,
   type BookRecord,
 } from '../../src/lib/storage';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('library storage', () => {
   it('round-trips books, resume positions, and audio without an API key field', async () => {
@@ -61,5 +67,15 @@ describe('library storage', () => {
     await deleteBook(book.id);
     expect(await getChapters(book.id)).toEqual([]);
     expect(await getAudio(key)).toBeNull();
+  });
+
+  it('throws when the storage ceiling is smaller than the audio', async () => {
+    const memory = new Map<string, string>([['pta-quota', '0']]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => memory.get(key) ?? null,
+      setItem: (key: string, value: string) => void memory.set(key, value),
+      removeItem: (key: string) => void memory.delete(key),
+    });
+    await expect(writeAudioBytes('book', 'clip', new Uint8Array(32))).rejects.toBeInstanceOf(StorageQuotaError);
   });
 });
