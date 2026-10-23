@@ -79,27 +79,43 @@ function cancelled(jobId: string): boolean {
   return cancelJob === jobId || activeJob !== jobId;
 }
 
+const SYNTHETIC_SLICES = 40;
+let spinSink = 0;
+
 function spin(ms: number) {
+  const scratch = new Uint32Array(4096);
   const start = performance.now();
+  let cursor = 0;
   while (performance.now() - start < ms) {
-    /* block the worker so only an explicit macrotask yield can observe cancel */
+    const slot = cursor % scratch.length;
+    scratch[slot] = ((scratch[slot] ?? 0) + 1) >>> 0;
+    cursor += 1;
   }
+  spinSink = scratch[0] ?? spinSink;
+}
+
+async function fetchRuntime(name: string): Promise<void> {
+  const response = await fetch(new URL(`/onnx/${name}`, self.location.origin));
+  if (!response.ok) throw new Error('Neural voice failed');
+  const bytes = await response.arrayBuffer();
+  if (name.endsWith('.wasm') && bytes.byteLength < 1_000_000) throw new Error('Neural voice failed');
 }
 
 async function run(message: Extract<InMessage, { type: 'generate' }>) {
   try {
     const synthetic = import.meta.env.MODE === 'test' && message.synthetic === true;
+    if (spinSink < 0) throw new Error('spin');
     let model: KokoroTTS | null = null;
     if (!synthetic) model = await loadModel(message.jobId);
     else {
-      const runtime = await fetch(new URL('/onnx/ort-wasm-simd-threaded.jsep.mjs', self.location.origin));
-      if (!runtime.ok) throw new Error('Neural voice failed');
+      await fetchRuntime('ort-wasm-simd-threaded.jsep.mjs');
+      await fetchRuntime('ort-wasm-simd-threaded.jsep.wasm');
     }
     if (cancelled(message.jobId)) {
       post({ type: 'cancelled', jobId: message.jobId });
       return;
     }
-    const parts = synthetic ? Array.from({ length: 8 }, (_, index) => `slice ${index}`) : speechChunks(message.text);
+    const parts = synthetic ? Array.from({ length: SYNTHETIC_SLICES }, (_, index) => `slice ${index}`) : speechChunks(message.text);
     const total = parts.length || 1;
     let sampleRate = 24000;
     for (let index = message.resumeFrom; index < parts.length; index += 1) {

@@ -26,6 +26,33 @@ build. When the browser cannot encode AAC itself, the app loads
 FFmpeg is licensed under the GPL-2.0-or-later. Building it for WebAssembly
 does not change that license.
 
-Other runtime pieces loaded by the app (Kokoro weights, pdf.js, tesseract.js,
-and onnxruntime-web) are fetched or copied under their own licenses and are
-not relicensed by this file.
+pdf.js
+License: Apache-2.0
+https://github.com/mozilla/pdf.js
+PDF parsing and text extraction use pdf.js. It stays under the Apache-2.0.
+
+onnxruntime-web
+License: MIT
+https://github.com/microsoft/onnxruntime
+The ONNX Runtime WebAssembly files under /onnx/ are from onnxruntime-web.
+
+transformers.js
+License: Apache-2.0
+https://github.com/huggingface/transformers.js
+Model and tokenizer loading uses @huggingface/transformers.
+
+tesseract.js
+License: Apache-2.0
+https://github.com/naptha/tesseract.js
+OCR of scanned pages uses tesseract.js and the eng traineddata.
+
+kokoro-js and Kokoro-82M
+License: Apache-2.0
+https://github.com/hexgrad/kokoro
+https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+Neural speech uses kokoro-js and the Kokoro-82M ONNX weights.
+
+workbox
+License: MIT
+https://github.com/GoogleChrome/workbox
+The service worker is generated with workbox.

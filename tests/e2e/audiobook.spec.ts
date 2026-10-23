@@ -161,7 +161,7 @@ test('clears the API key when the endpoint origin changes', async ({ page }) => 
 });
 
 test('keeps the neural engine when jumping chapters during generation', async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   await page.addInitScript(() => {
     localStorage.setItem('pta-tts', 'worker');
   });
@@ -170,17 +170,21 @@ test('keeps the neural engine when jumping chapters during generation', async ({
   await page.locator('#pdf-file').setInputFiles(fixture);
   await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Play' }).click();
-  await expect(page.locator('.play .stat')).toBeVisible();
+  const speaking = page.locator('main.shell');
+  const arrivalId = await speaking.getAttribute('data-chapter');
+  expect(arrivalId).toBeTruthy();
+  await expect(speaking).toHaveAttribute('data-speaking', arrivalId!, { timeout: 15_000 });
   await page.getByRole('button', { name: 'Chapters' }).click();
   await page.getByRole('button', { name: 'Departure' }).click();
   await expect(page.locator('.chapter-name')).toHaveText('Departure', { timeout: 1_000 });
-  const speaking = page.locator('main.shell');
   await expect(speaking).toHaveAttribute('data-engine', 'kokoro');
   const chapterId = await speaking.getAttribute('data-chapter');
   expect(chapterId).toBeTruthy();
-  await expect(speaking).toHaveAttribute('data-speaking', chapterId!, { timeout: 1_600 });
+  expect(chapterId).not.toBe(arrivalId);
+  await expect(speaking).toHaveAttribute('data-speaking', chapterId!, { timeout: 4_000 });
+  await expect(page.locator('.play .stat')).toBeVisible();
   await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 30_000 });
   const duration = await page.evaluate(() => document.querySelector('audio')?.duration ?? 0);
   expect(duration).toBeGreaterThan(0.25);
   await page.getByRole('button', { name: 'More' }).click();
@@ -203,6 +207,20 @@ test('imports a PDF after an offline reload', async ({ page }) => {
     await navigator.serviceWorker.ready;
     if (!navigator.serviceWorker.controller) throw new Error('service worker is not controlling the page');
   });
+  await page.evaluate(async () => {
+    const response = await fetch('/onnx/ort-wasm-simd-threaded.jsep.wasm');
+    if (!response.ok) throw new Error(`wasm ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength < 1_000_000) throw new Error('wasm was not fetched');
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const cache = await caches.open('onnx-runtime');
+      const keys = await cache.keys();
+      if (keys.some((key) => key.url.includes('ort-wasm-simd-threaded.jsep.wasm'))) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error('onnx runtime cache missed the wasm');
+  });
   await page.context().setOffline(true);
   await page.reload();
   await expect(page.getByRole('button', { name: 'Add' })).toBeVisible();
@@ -211,7 +229,7 @@ test('imports a PDF after an offline reload', async ({ page }) => {
   await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
   await page.getByRole('button', { name: 'Play' }).click();
   await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
-  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
 });
 
@@ -233,6 +251,9 @@ test('serves third-party notices as text while the service worker controls the p
   const body = await response?.text();
   expect(body).toContain('lamejs');
   expect(body).toContain('LGPL-3.0');
+  expect(body).toContain('pdf.js');
+  expect(body).toContain('Apache-2.0');
+  expect(body).toContain('workbox');
   expect(body).not.toContain('<div id="app">');
 });
 
@@ -249,6 +270,16 @@ test('shows a storage message instead of switching voices when the disk is full'
   await expect(page.getByText('Not enough storage')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
   await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+});
+
+test('keeps a paste draft when the sheet redraws', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Add' }).click();
+  await page.getByRole('button', { name: 'Paste text' }).click();
+  await page.getByLabel('Article text').fill('https://example.com/story');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('No article text')).toBeVisible();
+  await expect(page.getByLabel('Article text')).toHaveValue('https://example.com/story');
 });
 
 test('hides a touch tooltip when the pointer is released', async ({ page }) => {

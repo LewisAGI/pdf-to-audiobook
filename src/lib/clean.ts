@@ -158,20 +158,7 @@ function lineFromGlyphs(page: RawPage, group: Glyph[]): Line | null {
   };
 }
 
-function bandIsFullWidth(glyphs: Glyph[], pageWidth: number): boolean {
-  if (!glyphs.length || pageWidth <= 0) return false;
-  const sorted = [...glyphs].sort((a, b) => a.x - b.x);
-  const first = sorted[0]!;
-  const last = sorted[sorted.length - 1]!;
-  if (last.x + last.width - first.x < pageWidth * 0.55) return false;
-  let largest = 0;
-  for (let index = 1; index < sorted.length; index += 1) {
-    const previous = sorted[index - 1]!;
-    const gap = sorted[index]!.x - (previous.x + previous.width);
-    if (gap > largest) largest = gap;
-  }
-  return largest < pageWidth * 0.08;
-}
+type Span = { left: number; right: number };
 
 function glyphWords(glyphs: Glyph[]): string[] {
   return glyphs
@@ -183,67 +170,145 @@ function glyphWords(glyphs: Glyph[]): string[] {
     .filter(Boolean);
 }
 
-function isTableRow(left: Glyph[], right: Glyph[]): boolean {
-  if (!left.length || !right.length) return false;
-  const leftWords = glyphWords(left);
-  const rightWords = glyphWords(right);
-  if (!leftWords.length || !rightWords.length || leftWords.length > 2 || rightWords.length > 2) return false;
-  const numeric = (words: string[]) => words.every((word) => /^[\d.,]+$/.test(word));
-  return numeric(leftWords) || numeric(rightWords);
+function gapThreshold(pageWidth: number): number {
+  return Math.max(14, pageWidth * 0.03);
 }
 
-function columnGutter(page: RawPage, glyphs: Glyph[]): number | null {
-  const body: Glyph[] = [];
-  for (const band of bandGlyphs(glyphs)) {
+function bodyBands(page: RawPage, glyphs: Glyph[]): Glyph[][] {
+  return bandGlyphs(glyphs).filter((band) => {
     const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
-    if (y <= 0.05 || y >= 0.95) continue;
-    if (bandIsFullWidth(band, page.width)) continue;
-    body.push(...band);
-  }
-  if (page.width < 240 || body.length < 4) return null;
-  const bins = 48;
-  const counts = new Array<number>(bins).fill(0);
-  for (const glyph of body) {
-    const center = glyph.x + glyph.width / 2;
-    const bin = Math.max(0, Math.min(bins - 1, Math.floor((center / page.width) * bins)));
-    counts[bin] = (counts[bin] ?? 0) + 1;
-  }
-  const startBin = Math.floor(bins * 0.3);
-  const endBin = Math.floor(bins * 0.7);
-  let bestStart = -1;
-  let bestLength = 0;
-  let run = 0;
-  let runStart = startBin;
-  for (let index = startBin; index <= endBin; index += 1) {
-    if ((counts[index] ?? 0) === 0) {
-      if (run === 0) runStart = index;
-      run += 1;
-      if (run > bestLength) {
-        bestLength = run;
-        bestStart = runStart;
-      }
-    } else run = 0;
-  }
-  if (bestStart < 0) return null;
-  const gapWidth = (bestLength / bins) * page.width;
-  if (gapWidth < page.width * 0.08) return null;
-  const gutter = ((bestStart + bestLength / 2) / bins) * page.width;
-  const left = body.filter((glyph) => glyph.x + glyph.width / 2 < gutter).length;
-  const right = body.filter((glyph) => glyph.x + glyph.width / 2 >= gutter).length;
-  if (left < 2 || right < 2) return null;
-  return gutter;
+    return y > 0.05 && y < 0.95;
+  });
 }
 
-function overlapsGutter(glyphs: Glyph[], gutter: number, pageWidth: number): boolean {
-  const margin = Math.max(4, pageWidth * 0.015);
-  return glyphs.some((glyph) => glyph.x < gutter + margin && glyph.x + glyph.width > gutter - margin);
+function bandGaps(band: Glyph[], minGap: number): Span[] {
+  const sorted = [...band].sort((a, b) => a.x - b.x);
+  const gaps: Span[] = [];
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1]!;
+    const next = sorted[index]!;
+    const left = previous.x + previous.width;
+    const right = next.x;
+    if (right - left >= minGap) gaps.push({ left, right });
+  }
+  return gaps;
+}
+
+function bandCrosses(band: Glyph[], span: Span, minGap: number): boolean {
+  const overlaps = band.some((glyph) => glyph.x < span.right && glyph.x + glyph.width > span.left);
+  if (!overlaps) return false;
+  return !bandGaps(band, minGap).some((gap) => gap.left < span.right && gap.right > span.left);
+}
+
+function whitespaceRuns(bands: Glyph[][], pageWidth: number, minGap: number): Span[] {
+  const bins = 96;
+  const cover = new Array<number>(bins).fill(0);
+  let votes = 0;
+  for (const band of bands) {
+    const gaps = bandGaps(band, minGap).filter((gap) => gap.left > pageWidth * 0.06 && gap.right < pageWidth * 0.94);
+    if (!gaps.length) continue;
+    votes += 1;
+    for (const gap of gaps) {
+      const start = Math.max(0, Math.floor((gap.left / pageWidth) * bins));
+      const end = Math.min(bins - 1, Math.ceil((gap.right / pageWidth) * bins) - 1);
+      for (let index = start; index <= end; index += 1) cover[index] = (cover[index] ?? 0) + 1;
+    }
+  }
+  if (votes < 2 || maxCover(cover) < 2) return [];
+  const threshold = maxCover(cover);
+  const runs: Span[] = [];
+  let start = -1;
+  for (let index = 0; index <= bins; index += 1) {
+    const hot = index < bins && (cover[index] ?? 0) >= threshold;
+    if (hot && start < 0) start = index;
+    if (!hot && start >= 0) {
+      const left = (start / bins) * pageWidth;
+      const right = (index / bins) * pageWidth;
+      if (right - left >= minGap * 0.75) runs.push({ left, right });
+      start = -1;
+    }
+  }
+  return runs;
+}
+
+function maxCover(cover: number[]): number {
+  return cover.reduce((best, value) => Math.max(best, value), 0);
+}
+
+function gutterFromRegion(bands: Glyph[][], region: Span, minGap: number): number | null {
+  const kept = bands.filter((band) => !bandCrosses(band, region, minGap));
+  let maxRight = Number.NEGATIVE_INFINITY;
+  let minLeft = Number.POSITIVE_INFINITY;
+  let leftCount = 0;
+  let rightCount = 0;
+  for (const band of kept) {
+    for (const glyph of band) {
+      const right = glyph.x + glyph.width;
+      if (glyph.x < region.left && right <= region.right) {
+        maxRight = Math.max(maxRight, right);
+        leftCount += 1;
+      } else if (glyph.x >= region.left) {
+        minLeft = Math.min(minLeft, glyph.x);
+        rightCount += 1;
+      }
+    }
+  }
+  if (leftCount < 2 || rightCount < 2 || !(minLeft > maxRight) || minLeft - maxRight < minGap * 0.5) return null;
+  return (maxRight + minLeft) / 2;
+}
+
+function columnGutters(page: RawPage, glyphs: Glyph[]): number[] {
+  if (page.width < 240) return [];
+  const minGap = gapThreshold(page.width);
+  let bands = bodyBands(page, glyphs);
+  let regions = whitespaceRuns(bands, page.width, minGap);
+  if (!regions.length) return [];
+  const kept = bands.filter((band) => !regions.some((region) => bandCrosses(band, region, minGap)));
+  if (kept.length && kept.length !== bands.length) {
+    const again = whitespaceRuns(kept, page.width, minGap);
+    if (again.length) {
+      bands = kept;
+      regions = again;
+    }
+  }
+  const gutters: number[] = [];
+  for (const region of regions) {
+    const gutter = gutterFromRegion(bands, region, minGap);
+    if (gutter == null) continue;
+    if (gutters.some((existing) => Math.abs(existing - gutter) < page.width * 0.08)) continue;
+    gutters.push(gutter);
+  }
+  return gutters.sort((a, b) => a - b);
+}
+
+function overlapsAnyGutter(glyphs: Glyph[], gutters: number[]): boolean {
+  return gutters.some((gutter) => glyphs.some((glyph) => glyph.x < gutter && glyph.x + glyph.width > gutter));
+}
+
+function splitAtGutters(band: Glyph[], gutters: number[]): Glyph[][] {
+  const cells: Glyph[][] = Array.from({ length: gutters.length + 1 }, () => []);
+  for (const glyph of band) {
+    const center = glyph.x + glyph.width / 2;
+    let index = 0;
+    while (index < gutters.length && center >= gutters[index]!) index += 1;
+    cells[index]!.push(glyph);
+  }
+  return cells;
+}
+
+function isTableCells(cells: Glyph[][]): boolean {
+  const groups = cells.map(glyphWords).filter((words) => words.length > 0);
+  if (groups.length < 2 || groups.some((words) => words.length > 2)) return false;
+  const numeric = (words: string[]) => words.every((word) => /^[\d.,]+$/.test(word));
+  if (groups.some(numeric)) return true;
+  return groups.length >= 4;
 }
 
 export function linesFromPage(page: RawPage): Line[] {
   const glyphs = dropMarkers(page.glyphs);
   const bands = bandGlyphs(glyphs);
-  const gutter = columnGutter(page, glyphs);
-  if (gutter == null) {
+  const gutters = columnGutters(page, glyphs);
+  if (!gutters.length) {
     return bands.flatMap((band) => {
       const line = lineFromGlyphs(page, band);
       return line ? [line] : [];
@@ -251,12 +316,15 @@ export function linesFromPage(page: RawPage): Line[] {
   }
   const header: Line[] = [];
   const footer: Line[] = [];
-  type Segment = { full: Line | null; left: Line[]; right: Line[] };
+  type Segment = { full: Line | null; columns: Line[][] };
   const segments: Segment[] = [];
-  let current: Segment = { full: null, left: [], right: [] };
-  const pushCurrent = () => {
-    if (current.full || current.left.length || current.right.length) segments.push(current);
-    current = { full: null, left: [], right: [] };
+  const blankColumns = (): Line[][] => Array.from({ length: gutters.length + 1 }, () => []);
+  let columns = blankColumns();
+  const flushColumns = () => {
+    if (columns.some((column) => column.length)) {
+      segments.push({ full: null, columns });
+      columns = blankColumns();
+    }
   };
   for (const band of bands) {
     const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
@@ -267,25 +335,24 @@ export function linesFromPage(page: RawPage): Line[] {
       else footer.push(line);
       continue;
     }
-    const leftGlyphs = band.filter((glyph) => glyph.x + glyph.width / 2 < gutter);
-    const rightGlyphs = band.filter((glyph) => glyph.x + glyph.width / 2 >= gutter);
-    if (overlapsGutter(band, gutter, page.width) || isTableRow(leftGlyphs, rightGlyphs)) {
+    const cells = splitAtGutters(band, gutters);
+    if (overlapsAnyGutter(band, gutters) || isTableCells(cells)) {
       const line = lineFromGlyphs(page, band);
       if (!line) continue;
-      pushCurrent();
-      segments.push({ full: line, left: [], right: [] });
+      flushColumns();
+      segments.push({ full: line, columns: [] });
       continue;
     }
-    const left = lineFromGlyphs(page, leftGlyphs);
-    const right = lineFromGlyphs(page, rightGlyphs);
-    if (left) current.left.push(left);
-    if (right) current.right.push(right);
+    cells.forEach((cell, index) => {
+      const line = lineFromGlyphs(page, cell);
+      if (line) columns[index]!.push(line);
+    });
   }
-  pushCurrent();
+  flushColumns();
   const ordered = [...header];
   for (const segment of segments) {
     if (segment.full) ordered.push(segment.full);
-    ordered.push(...segment.left, ...segment.right);
+    for (const column of segment.columns) ordered.push(...column);
   }
   ordered.push(...footer);
   return ordered;

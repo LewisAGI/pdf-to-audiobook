@@ -108,6 +108,74 @@ describe('chapter detection', () => {
     await pdf.destroy();
   });
 
+  it('reads a narrow centred title down the left column first', async () => {
+    const { pdf, paragraphs } = await parsed('centre-title.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('CENTRETITLE')).toBeGreaterThanOrEqual(0);
+    expect(at('CENTRETITLE')).toBeLessThan(at('LEFTCENTRE'));
+    expect(at('LEFTCENTRE')).toBeLessThan(at('LEFTCENTREEND'));
+    expect(at('LEFTCENTREEND')).toBeLessThan(at('RIGHTCENTRE'));
+    expect(at('RIGHTCENTRE')).toBeLessThan(at('RIGHTCENTREEND'));
+    expect(text).not.toContain('LEFTCENTRE RIGHTCENTRE');
+    await pdf.destroy();
+  });
+
+  it('reads around a narrow centred caption', async () => {
+    const { pdf, paragraphs } = await parsed('centre-caption.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('LEFTBEFORE')).toBeLessThan(at('RIGHTBEFORE'));
+    expect(at('RIGHTBEFORE')).toBeLessThan(at('CENTRECAPTION'));
+    expect(at('CENTRECAPTION')).toBeLessThan(at('LEFTAFTER'));
+    expect(at('LEFTAFTER')).toBeLessThan(at('RIGHTAFTER'));
+    await pdf.destroy();
+  });
+
+  it('reads the text beside a one-column figure with the right column', async () => {
+    const { pdf, paragraphs } = await parsed('figure-column.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('ABOVELEFT')).toBeLessThan(at('BELOWLEFT'));
+    expect(at('BELOWLEFT')).toBeLessThan(at('ABOVERIGHT'));
+    expect(at('ABOVERIGHT')).toBeLessThan(at('BESIDEA'));
+    expect(at('BESIDEA')).toBeLessThan(at('BESIDEB'));
+    expect(at('BESIDEB')).toBeLessThan(at('BELOWRIGHT'));
+    await pdf.destroy();
+  });
+
+  it('reads an uneven column split down the wide column first', async () => {
+    const { pdf, paragraphs } = await parsed('uneven.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('WIDELEFT')).toBeLessThan(at('WIDELEFTEND'));
+    expect(at('WIDELEFTEND')).toBeLessThan(at('NARROWRIGHT'));
+    expect(at('NARROWRIGHT')).toBeLessThan(at('NARROWRIGHTEND'));
+    expect(text).not.toContain('WIDELEFT NARROWRIGHT');
+    await pdf.destroy();
+  });
+
+  it('reads three columns from left to right', async () => {
+    const { pdf, paragraphs } = await parsed('three-columns.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    const at = (marker: string) => text.indexOf(marker);
+    expect(at('COL1A')).toBeLessThan(at('COL1B'));
+    expect(at('COL1B')).toBeLessThan(at('COL2A'));
+    expect(at('COL2A')).toBeLessThan(at('COL2B'));
+    expect(at('COL2B')).toBeLessThan(at('COL3A'));
+    expect(at('COL3A')).toBeLessThan(at('COL3B'));
+    await pdf.destroy();
+  });
+
+  it('reads a table with three or more columns across each row', async () => {
+    const { pdf, paragraphs } = await parsed('wide-table.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(text.indexOf('Mon')).toBeLessThan(text.indexOf('Heron'));
+    expect(text.indexOf('Heron')).toBeLessThan(text.indexOf('Plover'));
+    expect(text).not.toContain('Species Heron');
+    await pdf.destroy();
+  });
+
   it('marks the scanned fixture as an OCR page', async () => {
     const data = new Uint8Array(await readFile(new URL('../fixtures/scanned.pdf', import.meta.url)));
     const pdf = await parsePdf(data, pdfAssets);

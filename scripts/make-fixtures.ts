@@ -210,6 +210,124 @@ async function columnsPdf(): Promise<Uint8Array> {
   return doc.save();
 }
 
+function drawCentered(
+  page: PDFPage,
+  text: string,
+  y: number,
+  size: number,
+  font: Awaited<ReturnType<PDFDocument['embedFont']>>,
+) {
+  const width = font.widthOfTextAtSize(text, size);
+  page.drawText(text, { x: (page.getWidth() - width) / 2, y, size, font });
+}
+
+async function centreTitlePdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Centred Title');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  drawCentered(page, 'CENTRETITLE', 700, 16, bold);
+  page.drawText('LEFTCENTRE', { x: 72, y: 620, size: 16, font: bold });
+  page.drawText('Left of the centred title.', { x: 72, y: 590, size: 12, font });
+  page.drawText('LEFTCENTREEND', { x: 72, y: 550, size: 16, font: bold });
+  page.drawText('RIGHTCENTRE', { x: 360, y: 620, size: 16, font: bold });
+  page.drawText('Right of the centred title.', { x: 360, y: 590, size: 12, font });
+  page.drawText('RIGHTCENTREEND', { x: 360, y: 550, size: 16, font: bold });
+  return doc.save();
+}
+
+async function centreCaptionPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Centred Caption');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  page.drawText('LEFTBEFORE', { x: 72, y: 680, size: 16, font: bold });
+  page.drawText('Left before the caption.', { x: 72, y: 650, size: 12, font });
+  page.drawText('RIGHTBEFORE', { x: 360, y: 680, size: 16, font: bold });
+  page.drawText('Right before the caption.', { x: 360, y: 650, size: 12, font });
+  drawCentered(page, 'CENTRECAPTION', 520, 12, font);
+  page.drawText('LEFTAFTER', { x: 72, y: 400, size: 16, font: bold });
+  page.drawText('Left after the caption.', { x: 72, y: 370, size: 12, font });
+  page.drawText('RIGHTAFTER', { x: 360, y: 400, size: 16, font: bold });
+  page.drawText('Right after the caption.', { x: 360, y: 370, size: 12, font });
+  return doc.save();
+}
+
+async function figureColumnPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Figure Column');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  page.drawRectangle({ x: 56, y: 430, width: 220, height: 150, color: rgb(0.85, 0.85, 0.85) });
+  page.drawText('ABOVELEFT', { x: 72, y: 680, size: 16, font: bold });
+  page.drawText('Left above the figure.', { x: 72, y: 650, size: 12, font });
+  page.drawText('ABOVERIGHT', { x: 360, y: 680, size: 16, font: bold });
+  page.drawText('Right above the figure.', { x: 360, y: 650, size: 12, font });
+  page.drawText('BESIDEA', { x: 360, y: 560, size: 16, font: bold });
+  page.drawText('Beside the figure.', { x: 360, y: 530, size: 12, font });
+  page.drawText('BESIDEB', { x: 360, y: 480, size: 16, font: bold });
+  page.drawText('BELOWLEFT', { x: 72, y: 360, size: 16, font: bold });
+  page.drawText('Left below the figure.', { x: 72, y: 330, size: 12, font });
+  page.drawText('BELOWRIGHT', { x: 360, y: 360, size: 16, font: bold });
+  page.drawText('Right below the figure.', { x: 360, y: 330, size: 12, font });
+  return doc.save();
+}
+
+async function unevenPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Uneven Columns');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  page.drawText('WIDELEFT', { x: 48, y: 680, size: 12, font: bold });
+  page.drawText('The wide left column keeps its long measure across the estuary.', { x: 48, y: 650, size: 12, font });
+  page.drawText('WIDELEFTEND', { x: 48, y: 600, size: 12, font: bold });
+  page.drawText('NARROWRIGHT', { x: 470, y: 680, size: 12, font: bold });
+  page.drawText('Narrow.', { x: 470, y: 650, size: 12, font });
+  page.drawText('NARROWRIGHTEND', { x: 470, y: 600, size: 12, font: bold });
+  return doc.save();
+}
+
+async function threeColumnsPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Three Columns');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  for (const [x, mark, body] of [
+    [36, 'COL1A', 'Left column of three.'],
+    [230, 'COL2A', 'Middle column of three.'],
+    [430, 'COL3A', 'Right column of three.'],
+  ] as const) {
+    page.drawText(mark, { x, y: 680, size: 14, font: bold });
+    page.drawText(body, { x, y: 650, size: 11, font });
+    page.drawText(mark.replace('A', 'B'), { x, y: 610, size: 14, font: bold });
+  }
+  return doc.save();
+}
+
+async function wideTablePdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Wide Table');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const page = doc.addPage([612, 792]);
+  const rows = [
+    ['Species', 'Mon', 'Tue', 'Wed'],
+    ['Heron', '14', '12', '9'],
+    ['Plover', '40', '38', '41'],
+    ['Egret', '2', '4', '5'],
+  ];
+  rows.forEach((row, rowIndex) => {
+    row.forEach((cell, cellIndex) => {
+      page.drawText(cell, { x: 72 + cellIndex * 120, y: 640 - rowIndex * 28, size: 12, font });
+    });
+  });
+  return doc.save();
+}
+
 await mkdir(outDir, { recursive: true });
 await writeFile(path.join(outDir, 'outline.pdf'), await outlinePdf());
 await writeFile(path.join(outDir, 'headings.pdf'), await headingsPdf());
@@ -218,4 +336,10 @@ await writeFile(path.join(outDir, 'scanned.pdf'), await scannedPdf());
 await writeFile(path.join(outDir, 'references.pdf'), await referencesPdf());
 await writeFile(path.join(outDir, 'columns.pdf'), await columnsPdf());
 await writeFile(path.join(outDir, 'paper.pdf'), await paperPdf());
+await writeFile(path.join(outDir, 'centre-title.pdf'), await centreTitlePdf());
+await writeFile(path.join(outDir, 'centre-caption.pdf'), await centreCaptionPdf());
+await writeFile(path.join(outDir, 'figure-column.pdf'), await figureColumnPdf());
+await writeFile(path.join(outDir, 'uneven.pdf'), await unevenPdf());
+await writeFile(path.join(outDir, 'three-columns.pdf'), await threeColumnsPdf());
+await writeFile(path.join(outDir, 'wide-table.pdf'), await wideTablePdf());
 console.log('fixtures written');

@@ -244,6 +244,218 @@ describe('cleaning', () => {
     expect(lines.join('\n')).not.toContain('Heron Plover');
   });
 
+  it('keeps single-column quotes, dialogue, and centred poems in line order', () => {
+    const glyph = (text: string, x: number, y: number, width: number): RawPage['glyphs'][number] => ({
+      text,
+      x,
+      y,
+      width,
+      height: 12,
+      fontSize: 12,
+      fontName: 'Times',
+    });
+    const quote = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('The block quote stayed indented.', 140, 180, 220),
+        glyph('Its second line stayed with the first.', 140, 200, 240),
+        glyph('The third line closed the quotation.', 140, 220, 210),
+      ],
+    }).map((line) => line.text);
+    expect(quote).toEqual([
+      'The block quote stayed indented.',
+      'Its second line stayed with the first.',
+      'The third line closed the quotation.',
+    ]);
+    const dialogue = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('Hello.', 72, 180, 36),
+        glyph('I stayed by the river.', 96, 210, 150),
+        glyph('Did you?', 72, 250, 48),
+      ],
+    }).map((line) => line.text);
+    expect(dialogue).toEqual(['Hello.', 'I stayed by the river.', 'Did you?']);
+    const poem = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('The', 250, 180, 28),
+        glyph('moon', 286, 180, 40),
+        glyph('was thin', 246, 210, 70),
+        glyph('and late.', 250, 240, 64),
+      ],
+    }).map((line) => line.text);
+    expect(poem).toEqual(['The moon', 'was thin', 'and late.']);
+  });
+
+  it('reads around a narrow centred title, a centred caption, a one-column figure, and an uneven split', () => {
+    const glyph = (text: string, x: number, y: number, width: number, size = 12): RawPage['glyphs'][number] => ({
+      text,
+      x,
+      y,
+      width,
+      height: size,
+      fontSize: size,
+      fontName: size >= 16 ? 'Times-Bold' : 'Times',
+    });
+    const centred = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('CENTRETITLE', 220, 80, 170, 16),
+        glyph('LEFTCENTRE', 72, 180, 140, 16),
+        glyph('left of the centred title.', 72, 210, 150),
+        glyph('LEFTCENTREEND', 72, 250, 150, 16),
+        glyph('RIGHTCENTRE', 400, 180, 140, 16),
+        glyph('right of the centred title.', 400, 210, 150),
+        glyph('RIGHTCENTREEND', 400, 250, 160, 16),
+      ],
+    }).map((line) => line.text);
+    expect(centred).toEqual([
+      'CENTRETITLE',
+      'LEFTCENTRE',
+      'left of the centred title.',
+      'LEFTCENTREEND',
+      'RIGHTCENTRE',
+      'right of the centred title.',
+      'RIGHTCENTREEND',
+    ]);
+    const caption = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('LEFTBEFORE', 72, 160, 140, 16),
+        glyph('left before the caption.', 72, 190, 150),
+        glyph('RIGHTBEFORE', 400, 160, 150, 16),
+        glyph('right before the caption.', 400, 190, 160),
+        glyph('CENTRECAPTION', 230, 280, 150, 12),
+        glyph('LEFTAFTER', 72, 360, 130, 16),
+        glyph('left after the caption.', 72, 390, 140),
+        glyph('RIGHTAFTER', 400, 360, 140, 16),
+        glyph('right after the caption.', 400, 390, 150),
+      ],
+    }).map((line) => line.text);
+    expect(caption.map((line) => line.split(' ')[0])).toEqual([
+      'LEFTBEFORE',
+      'left',
+      'RIGHTBEFORE',
+      'right',
+      'CENTRECAPTION',
+      'LEFTAFTER',
+      'left',
+      'RIGHTAFTER',
+      'right',
+    ]);
+    const figure = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: true,
+      glyphs: [
+        glyph('ABOVELEFT', 72, 160, 120, 16),
+        glyph('left above the figure.', 72, 190, 140),
+        glyph('ABOVERIGHT', 400, 160, 130, 16),
+        glyph('right above the figure.', 400, 190, 150),
+        glyph('BESIDEA', 400, 250, 90, 16),
+        glyph('beside the figure.', 400, 280, 120),
+        glyph('BESIDEB', 400, 320, 90, 16),
+        glyph('BELOWLEFT', 72, 400, 120, 16),
+        glyph('left below the figure.', 72, 430, 140),
+        glyph('BELOWRIGHT', 400, 400, 130, 16),
+        glyph('right below the figure.', 400, 430, 150),
+      ],
+    }).map((line) => line.text.split(' ')[0]);
+    expect(figure).toEqual([
+      'ABOVELEFT',
+      'left',
+      'BELOWLEFT',
+      'left',
+      'ABOVERIGHT',
+      'right',
+      'BESIDEA',
+      'beside',
+      'BESIDEB',
+      'BELOWRIGHT',
+      'right',
+    ]);
+    const uneven = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('WIDELEFT', 48, 160, 340, 16),
+        glyph('The wide left column keeps its long measure.', 48, 200, 330),
+        glyph('WIDELEFTEND', 48, 250, 300, 16),
+        glyph('NARROWRIGHT', 460, 160, 90, 16),
+        glyph('Narrow.', 460, 200, 60),
+        glyph('NARROWRIGHTEND', 460, 250, 110, 16),
+      ],
+    }).map((line) => line.text);
+    expect(uneven.map((line) => line.split(' ')[0])).toEqual([
+      'WIDELEFT',
+      'The',
+      'WIDELEFTEND',
+      'NARROWRIGHT',
+      'Narrow.',
+      'NARROWRIGHTEND',
+    ]);
+    expect(uneven.join('\n')).not.toContain('WIDELEFT NARROWRIGHT');
+  });
+
+  it('reads three text columns left to right and a wide table row by row', () => {
+    const glyph = (text: string, x: number, y: number, width = text.length * 7): RawPage['glyphs'][number] => ({
+      text,
+      x,
+      y,
+      width,
+      height: 12,
+      fontSize: 12,
+      fontName: 'Times',
+    });
+    const columns = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [180, 210, 250].flatMap((y) => [
+        glyph(y === 180 ? 'COL1A' : y === 210 ? 'COL1B' : 'COL1C', 40, y, 110),
+        glyph(y === 180 ? 'COL2A' : y === 210 ? 'COL2B' : 'COL2C', 230, y, 110),
+        glyph(y === 180 ? 'COL3A' : y === 210 ? 'COL3B' : 'COL3C', 430, y, 110),
+      ]),
+    }).map((line) => line.text);
+    expect(columns).toEqual(['COL1A', 'COL1B', 'COL1C', 'COL2A', 'COL2B', 'COL2C', 'COL3A', 'COL3B', 'COL3C']);
+    const table = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        ['Species', 'Mon', 'Tue', 'Wed', 160],
+        ['Heron', '14', '12', '9', 190],
+        ['Plover', '40', '38', '41', 220],
+        ['Egret', '2', '4', '5', 250],
+      ].flatMap(([a, b, c, d, y]) =>
+        [a, b, c, d].map((text, index) => glyph(String(text), 72 + index * 130, Number(y), 40)),
+      ),
+    }).map((line) => line.text);
+    expect(table).toEqual(['Species Mon Tue Wed', 'Heron 14 12 9', 'Plover 40 38 41', 'Egret 2 4 5']);
+    expect(table.join('\n')).not.toContain('Species Heron');
+  });
+
   it('keeps a heading on its own paragraph', () => {
     const body: Line = {
       text: 'The river kept its name through the valley.',

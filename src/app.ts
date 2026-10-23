@@ -14,6 +14,7 @@ import {
 import { formatClock, sanitizeResume } from './lib/resume';
 import { summarizeExtractive } from './lib/summary';
 import { endpointOrigin, normalizeEndpoint, readLlmKey, summarizeWithLlm, writeLlmKey } from './lib/llm';
+import { monotonicProgress } from './lib/model-progress';
 import { recognizeGlyphs } from './lib/ocr';
 import { parsePdf } from './lib/pdf';
 import {
@@ -91,6 +92,7 @@ export class App {
   private priming = false;
   private playbackArmed = false;
   private silenceUrl = '';
+  private progressMark = 0;
   private pasteDraft = '';
   private renameDraft = '';
   private endpointDraft = '';
@@ -536,6 +538,7 @@ export class App {
 
   private async importPdf(file: File) {
     this.sheet = null;
+    this.progressMark = 0;
     this.setBusy('Reading', 0.02);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -795,6 +798,7 @@ export class App {
       return readAudioBytes(this.book.id, key);
     }
     this.generating = true;
+    this.progressMark = 0;
     const resumeFrom = existing && !existing.complete ? existing.sentencesDone : 0;
     const prior = resumeFrom > 0 && existing ? await loadAudioPcm(existing) : null;
     const startFrom = prior ? resumeFrom : 0;
@@ -810,7 +814,7 @@ export class App {
       resumeFrom: startFrom,
       prior: prior?.samples,
       priorRate: prior?.sampleRate,
-      onProgress: (progress) => this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', progress.ratio || 0.04),
+      onProgress: (progress) => this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', progress.ratio),
       onSentence: async (update) => {
         if (this.chapters[this.index]?.id === chapter.id) {
           this.root.querySelector('main.shell')?.setAttribute('data-speaking', chapter.id);
@@ -1015,6 +1019,7 @@ export class App {
         payload.push({ title: chapter.title, samples: decoded.samples, sampleRate: decoded.sampleRate });
       }
       if (!payload.length) return;
+      this.progressMark = 0;
       this.setBusy('Export', 0.4);
       const file = await build(payload);
       this.busy = null;
@@ -1060,7 +1065,9 @@ export class App {
   }
 
   private setBusy(label: string, ratio: number) {
-    this.busy = { label, ratio: Math.max(0, Math.min(1, ratio)) };
+    const next = monotonicProgress(this.progressMark, ratio);
+    this.progressMark = next;
+    this.busy = { label, ratio: next };
     const bar = this.root.querySelector<HTMLElement>('#busy-bar');
     const play = this.root.querySelector('.play');
     if (!bar && play && this.generating) {

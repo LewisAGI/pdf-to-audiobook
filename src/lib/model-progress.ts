@@ -9,6 +9,12 @@ export type ModelProgressEvent = {
   progress?: number;
 };
 
+export function monotonicProgress(previous: number, ratio: number): number {
+  const prior = Number.isFinite(previous) ? Math.max(0, Math.min(1, previous)) : 0;
+  if (!Number.isFinite(ratio)) return prior;
+  return Math.max(prior, Math.max(0, Math.min(1, ratio)));
+}
+
 export function modelProgressRatio(progress: { progress?: number; loaded?: number; total?: number }): number {
   let raw = 0;
   if (typeof progress.progress === 'number' && Number.isFinite(progress.progress)) raw = progress.progress;

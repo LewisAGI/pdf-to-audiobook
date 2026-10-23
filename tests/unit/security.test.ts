@@ -31,6 +31,14 @@ describe('response headers', () => {
     expect(notices).toMatch(/GPL-3\.0/);
     expect(notices).toMatch(/ffmpeg/i);
     expect(notices).toMatch(/GPL-2\.0-or-later/);
+    expect(notices).toMatch(/pdf\.js/);
+    expect(notices).toMatch(/Apache-2\.0/);
+    expect(notices).toMatch(/onnxruntime-web/);
+    expect(notices).toMatch(/MIT/);
+    expect(notices).toMatch(/transformers\.js/);
+    expect(notices).toMatch(/tesseract\.js/);
+    expect(notices).toMatch(/kokoro-js/);
+    expect(notices).toMatch(/workbox/);
     const app = readFileSync(new URL('../../src/app.ts', import.meta.url), 'utf8');
     expect(app).toContain('/THIRD_PARTY_NOTICES.txt');
   });
