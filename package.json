@@ -1,0 +1,44 @@
+{
+  "name": "pdf-to-audiobook",
+  "version": "1.0.0",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "postinstall": "node scripts/copy-assets.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:e2e": "tsc --noEmit && vite build --mode test",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "fixtures": "tsx scripts/make-fixtures.ts",
+    "icons": "node scripts/make-icons.mjs",
+    "prove:neural": "tsx scripts/prove-neural.ts"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@huggingface/transformers": "^3.8.1",
+    "jszip": "^3.10.2",
+    "kokoro-js": "^1.2.1",
+    "lamejs": "^1.2.1",
+    "pdfjs-dist": "^5.7.284",
+    "tesseract.js": "^5.1.1",
+    "vite-plugin-pwa": "^1.3.0"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "@types/node": "^24.19.2",
+    "fake-indexeddb": "^6.2.6",
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.64.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7"
+  }
+}
