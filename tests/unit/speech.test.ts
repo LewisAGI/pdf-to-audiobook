@@ -1,8 +1,39 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { KOKORO_REVISION } from '../../src/lib/kokoro-model';
 import { installKokoroVoicePin } from '../../src/lib/kokoro-voices';
-import { aggregateModelProgress, modelProgressRatio, monotonicProgress } from '../../src/lib/model-progress';
+import { aggregateModelProgress, modelProgressRatio, monotonicProgress, phaseProgress } from '../../src/lib/model-progress';
+
+const posted: Array<{ type?: string; phase?: string; ratio?: number }> = [];
+let modelCallback: ((info: unknown) => void) | null = null;
+
+vi.mock('@huggingface/transformers', () => ({
+  env: {
+    allowLocalModels: false,
+    useBrowserCache: true,
+    backends: { onnx: { wasm: {} as { wasmPaths?: string; numThreads?: number } } },
+  },
+  StyleTextToSpeech2Model: {
+    from_pretrained: async (_id: string, options: { progress_callback?: (info: unknown) => void }) => {
+      modelCallback = options.progress_callback ?? null;
+      return {};
+    },
+  },
+  AutoTokenizer: {
+    from_pretrained: async () => ({}),
+  },
+}));
+
+vi.mock('kokoro-js', () => ({
+  KokoroTTS: class {
+    constructor(
+      public model: unknown,
+      public tokenizer: unknown,
+    ) {}
+    async generate() {
+      return { audio: new Float32Array(8), sampling_rate: 24000 };
+    }
+  },
+}));
 import { speechChunks } from '../../src/lib/speech-text';
 import { stubAllowed } from '../../src/lib/tts';
 
@@ -37,15 +68,22 @@ describe('speech helpers', () => {
     expect(second).toBeLessThan(0.8);
   });
 
-  it('keeps displayed progress from falling when a later file or the speech phase starts', () => {
+  it('gives model loading and speech separate shares of the bar', () => {
+    expect(phaseProgress('model', 1)).toBeCloseTo(0.3);
+    expect(phaseProgress('speech', 0)).toBeCloseTo(0.3);
+    expect(phaseProgress('speech', 1)).toBe(1);
     let mark = 0;
-    for (const ratio of [0.02, 0, 0.01, 0.08, 1, 0, 0.04, 0.03]) mark = monotonicProgress(mark, ratio);
-    expect(mark).toBe(1);
-    const worker = readFileSync(new URL('../../src/workers/tts.worker.ts', import.meta.url), 'utf8');
-    expect(worker).toMatch(/aggregateModelProgress\(\s*modelFiles\s*,\s*progress\s*\)/);
-    const app = readFileSync(new URL('../../src/app.ts', import.meta.url), 'utf8');
-    expect(app).toContain('monotonicProgress(this.progressMark, ratio)');
-    expect(app).not.toMatch(/\|\|\s*0\.04/);
+    const steps: Array<['model' | 'speech', number]> = [
+      ['model', 0.02],
+      ['model', 0],
+      ['model', 1],
+      ['speech', 0],
+      ['speech', 0.04],
+      ['speech', 0.03],
+    ];
+    for (const [phase, ratio] of steps) mark = monotonicProgress(mark, phaseProgress(phase, ratio));
+    expect(mark).toBeCloseTo(0.3 + 0.04 * 0.7);
+    expect(mark).toBeLessThan(0.5);
   });
 
   it('pins Kokoro voice files away from resolve/main', async () => {
@@ -74,21 +112,47 @@ describe('speech helpers', () => {
     const opened = await target.caches.open('kokoro-voices');
     await opened.match(main);
     expect(calls.some((call) => call.startsWith('match:') && call.includes(KOKORO_REVISION))).toBe(true);
-    const worker = readFileSync(new URL('../../src/workers/tts.worker.ts', import.meta.url), 'utf8');
-    expect(worker).toContain('installKokoroVoicePin(globalThis)');
-    expect(worker).toContain('SYNTHETIC_SLICES = 40');
-    expect(worker).toContain('await new Promise((resolve) => setTimeout(resolve, 0))');
-    const app = readFileSync(new URL('../../src/app.ts', import.meta.url), 'utf8');
-    const jump = app.slice(app.indexOf("action === 'jump'"), app.indexOf("action === 'rename'"));
-    const indexAt = jump.indexOf('this.index = index');
-    const closeAt = jump.indexOf('this.closeSheet()');
-    expect(indexAt).toBeGreaterThanOrEqual(0);
-    expect(closeAt).toBeGreaterThan(indexAt);
-    const play = app.slice(app.indexOf('private async playChapter'), app.indexOf('private speak('));
-    const renderAt = play.indexOf('this.render()');
-    const audioAt = play.indexOf('this.ensureAudio(');
-    expect(renderAt).toBeGreaterThanOrEqual(0);
-    expect(audioAt).toBeGreaterThan(renderAt);
+  });
+
+  it('loads the worker with the voice pin and aggregated model progress', async () => {
+    const calls: string[] = [];
+    const scope = globalThis as typeof globalThis & {
+      self: typeof globalThis;
+      onmessage: ((event: MessageEvent) => void) | null;
+      postMessage: (message: unknown) => void;
+      location: Location;
+      crossOriginIsolated: boolean;
+    };
+    scope.self = scope;
+    scope.location = { origin: 'http://127.0.0.1:4173' } as Location;
+    scope.crossOriginIsolated = false;
+    scope.postMessage = (message) => {
+      posted.push(message as { type?: string; phase?: string; ratio?: number });
+    };
+    if (!globalThis.caches) {
+      globalThis.caches = {
+        open: async () => ({}) as Cache,
+      } as CacheStorage;
+    }
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push(url);
+      return new Response('ok');
+    }) as typeof fetch;
+    await import('../../src/workers/tts.worker.ts');
+    const voice = 'https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/voices/af_heart.bin';
+    await globalThis.fetch(voice);
+    expect(calls[0]).toContain(KOKORO_REVISION);
+    expect(calls[0]).not.toContain('/resolve/main/');
+    scope.onmessage?.({ data: { type: 'generate', jobId: 'job-1', text: 'Hello there.', voice: 'af_heart', speed: 1, resumeFrom: 0 } } as MessageEvent);
+    await vi.waitFor(() => {
+      if (!modelCallback) throw new Error('model progress callback missing');
+    });
+    modelCallback?.({ status: 'progress', file: 'model.onnx', loaded: 100, total: 100, progress: 100 });
+    modelCallback?.({ status: 'progress', file: 'tokenizer.json', loaded: 4, total: 100, progress: 4 });
+    const ratios = posted.filter((message) => message.type === 'progress' && message.phase === 'model').map((message) => message.ratio ?? 0);
+    expect(ratios.at(-1)).toBeCloseTo(0.52);
+    expect(ratios.at(-1)).toBeLessThan(0.8);
   });
 
   it('allows the stub voice only in dev and test builds', () => {

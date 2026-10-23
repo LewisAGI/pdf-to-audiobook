@@ -176,6 +176,77 @@ describe('chapter detection', () => {
     await pdf.destroy();
   });
 
+  it('keeps a code block with aligned equals signs on one line each', async () => {
+    for (const name of ['code-spaces.pdf', 'code-tokens.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      expect(text, name).toMatch(/herons\s+=\s+12/);
+      expect(text, name).toMatch(/plovers\s+=\s+40/);
+      expect(text, name).not.toMatch(/herons\s+plovers/);
+      expect(text.indexOf('herons')).toBeLessThan(text.indexOf('plovers'));
+      await pdf.destroy();
+    }
+  });
+
+  it('reads narrow gutters down the left column, including an 8pt justified gap', async () => {
+    for (const name of ['gutter8.pdf', 'gutter12.pdf', 'just-gutter8.pdf', 'just-gutter14.pdf', 'just-gutter20.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      expect(text, name).toContain('walked north');
+      expect(text.indexOf('ford.'), name).toBeLessThan(text.indexOf('In the afternoon'));
+      expect(text, name).not.toContain('walked In the afternoon');
+      await pdf.destroy();
+    }
+  });
+
+  it('does not turn justified word spacing or rivers into columns', async () => {
+    for (const name of ['rivers.pdf', 'justified-words.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      expect(text, name).not.toMatch(/Morning\s+shallow/);
+      expect(text, name).toMatch(/heron/);
+      await pdf.destroy();
+    }
+  });
+
+  it('keeps a single numeric line ending inside its column', async () => {
+    const { pdf, paragraphs } = await parsed('prose-numeric.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(text.indexOf('1890.')).toBeLessThan(text.indexOf('The boat team'));
+    expect(text.indexOf('of 40.')).toBeGreaterThan(text.indexOf('reaching a total'));
+    expect(text).not.toContain('1890. of 40.');
+    await pdf.destroy();
+  });
+
+  it('reads a rotated page from the left column with spaces between words', async () => {
+    for (const name of ['rotate90.pdf', 'rotate90-landscape.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      expect(text, name).toContain('walked north');
+      expect(text, name).toContain('took the');
+      expect(text, name).not.toContain('walkednorth');
+      expect(text, name).not.toContain('tookthe');
+      expect(text.indexOf('ford.'), name).toBeLessThan(text.indexOf('In the afternoon'));
+      await pdf.destroy();
+    }
+  });
+
+  it('does not turn a slightly larger column into chapter headings', async () => {
+    const mixed = await parsed('mixed-sizes.pdf');
+    const text = mixed.paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(text.indexOf('Walking Team')).toBeLessThan(text.indexOf('walked'));
+    expect(text.indexOf('ford.')).toBeLessThan(text.indexOf('In the afternoon'));
+    expect(mixed.paragraphs.some((paragraph) => paragraph.kind === 'heading' && /afternoon|spoonbills|salt flats/.test(paragraph.text))).toBe(false);
+    const chapters = detectChapters(mixed.paragraphs, mixed.pdf.outline);
+    expect(chapters.map((chapter) => chapter.title).join('\n')).not.toMatch(/afternoon|spoonbills/);
+    await mixed.pdf.destroy();
+    const real = await parsed('mixed-real.pdf');
+    expect(real.paragraphs.some((paragraph) => paragraph.kind === 'heading' && paragraph.text === 'Return Walk')).toBe(true);
+    const realText = real.paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(realText.indexOf('Return Walk')).toBeLessThan(realText.indexOf('In the afternoon'));
+    await real.pdf.destroy();
+  });
+
   it('marks the scanned fixture as an OCR page', async () => {
     const data = new Uint8Array(await readFile(new URL('../fixtures/scanned.pdf', import.meta.url)));
     const pdf = await parsePdf(data, pdfAssets);

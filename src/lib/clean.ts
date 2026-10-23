@@ -170,8 +170,36 @@ function glyphWords(glyphs: Glyph[]): string[] {
     .filter(Boolean);
 }
 
-function gapThreshold(pageWidth: number): number {
-  return Math.max(14, pageWidth * 0.03);
+function interWordGaps(bands: Glyph[][]): number[] {
+  const gaps: number[] = [];
+  for (const band of bands) {
+    const sorted = [...band].sort((a, b) => a.x - b.x);
+    for (let index = 1; index < sorted.length; index += 1) {
+      const previous = sorted[index - 1]!;
+      const next = sorted[index]!;
+      const gap = next.x - (previous.x + previous.width);
+      if (gap > 0.4) gaps.push(gap);
+    }
+  }
+  return gaps;
+}
+
+function gapThreshold(bands: Glyph[][]): number {
+  const gaps = interWordGaps(bands);
+  const spacing = gaps.length >= 4 ? median(gaps) : 2.5;
+  // A gutter has to clear ordinary word spacing, but justification can stretch
+  // those gaps past a narrow columnsep (LaTeX is 10pt, and an 8pt gutter still
+  // has to win). Cap the floor so it stays under that gutter. A fixed
+  // max(30pt, 6% of the page) misses the narrow-gutter fixtures.
+  return Math.min(7, Math.max(2.5, spacing * 0.45));
+}
+
+function minimumColumnBands(): number {
+  return 3;
+}
+
+function minimumColumnWidth(pageWidth: number): number {
+  return Math.max(72, pageWidth * 0.11);
 }
 
 function bodyBands(page: RawPage, glyphs: Glyph[]): Glyph[][] {
@@ -214,7 +242,8 @@ function whitespaceRuns(bands: Glyph[][], pageWidth: number, minGap: number): Sp
       for (let index = start; index <= end; index += 1) cover[index] = (cover[index] ?? 0) + 1;
     }
   }
-  if (votes < 2 || maxCover(cover) < 2) return [];
+  const minBands = minimumColumnBands();
+  if (votes < minBands || maxCover(cover) < minBands) return [];
   const threshold = maxCover(cover);
   const runs: Span[] = [];
   let start = -1;
@@ -257,11 +286,68 @@ function gutterFromRegion(bands: Glyph[][], region: Span, minGap: number): numbe
   return (maxRight + minLeft) / 2;
 }
 
+function columnInkWidth(bands: Glyph[][], low: number, high: number): number {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  for (const band of bands) {
+    for (const glyph of band) {
+      const center = glyph.x + glyph.width / 2;
+      if (center < low || center >= high) continue;
+      minX = Math.min(minX, glyph.x);
+      maxX = Math.max(maxX, glyph.x + glyph.width);
+    }
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return 0;
+  return maxX - minX;
+}
+
+function columnsWideEnough(pageWidth: number, bands: Glyph[][], gutters: number[]): boolean {
+  const minWidth = minimumColumnWidth(pageWidth);
+  const edges = [Number.NEGATIVE_INFINITY, ...gutters, Number.POSITIVE_INFINITY];
+  return edges.slice(0, -1).every((low, index) => columnInkWidth(bands, low, edges[index + 1]!) >= minWidth);
+}
+
+function sideRegion(bands: Glyph[][], pageWidth: number, minGap: number): Span[] {
+  const minBands = minimumColumnBands();
+  let bestX = -1;
+  let bestScore = 0;
+  const steps = 64;
+  for (let step = 1; step < steps; step += 1) {
+    const x = (step / steps) * pageWidth;
+    if (x < pageWidth * 0.12 || x > pageWidth * 0.88) continue;
+    let left = 0;
+    let right = 0;
+    for (const band of bands) {
+      const minX = Math.min(...band.map((glyph) => glyph.x));
+      const maxX = Math.max(...band.map((glyph) => glyph.x + glyph.width));
+      if (maxX <= x) left += 1;
+      else if (minX >= x) right += 1;
+    }
+    const score = Math.min(left, right);
+    if (left < minBands || right < minBands || score <= bestScore) continue;
+    bestScore = score;
+    bestX = x;
+  }
+  if (bestX < 0) return [];
+  let maxRight = Number.NEGATIVE_INFINITY;
+  let minLeft = Number.POSITIVE_INFINITY;
+  for (const band of bands) {
+    for (const glyph of band) {
+      const right = glyph.x + glyph.width;
+      if (right <= bestX) maxRight = Math.max(maxRight, right);
+      else if (glyph.x >= bestX) minLeft = Math.min(minLeft, glyph.x);
+    }
+  }
+  if (!(minLeft > maxRight) || minLeft - maxRight < minGap) return [];
+  return [{ left: maxRight, right: minLeft }];
+}
+
 function columnGutters(page: RawPage, glyphs: Glyph[]): number[] {
   if (page.width < 240) return [];
-  const minGap = gapThreshold(page.width);
   let bands = bodyBands(page, glyphs);
+  const minGap = gapThreshold(bands);
   let regions = whitespaceRuns(bands, page.width, minGap);
+  if (!regions.length) regions = sideRegion(bands, page.width, minGap);
   if (!regions.length) return [];
   const kept = bands.filter((band) => !regions.some((region) => bandCrosses(band, region, minGap)));
   if (kept.length && kept.length !== bands.length) {
@@ -278,7 +364,9 @@ function columnGutters(page: RawPage, glyphs: Glyph[]): number[] {
     if (gutters.some((existing) => Math.abs(existing - gutter) < page.width * 0.08)) continue;
     gutters.push(gutter);
   }
-  return gutters.sort((a, b) => a - b);
+  const ordered = gutters.sort((a, b) => a - b);
+  if (!ordered.length || !columnsWideEnough(page.width, bands, ordered)) return [];
+  return ordered;
 }
 
 function overlapsAnyGutter(glyphs: Glyph[], gutters: number[]): boolean {
@@ -316,6 +404,24 @@ export function linesFromPage(page: RawPage): Line[] {
   }
   const header: Line[] = [];
   const footer: Line[] = [];
+  const tableLike = bands.map((band) => {
+    const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
+    if (y <= 0.055 || y >= 0.94) return false;
+    const cells = splitAtGutters(band, gutters);
+    return !overlapsAnyGutter(band, gutters) && isTableCells(cells);
+  });
+  const tableRow = new Set<number>();
+  let runStart = -1;
+  for (let index = 0; index <= tableLike.length; index += 1) {
+    if (tableLike[index]) {
+      if (runStart < 0) runStart = index;
+      continue;
+    }
+    if (runStart >= 0 && index - runStart >= 2) {
+      for (let cursor = runStart; cursor < index; cursor += 1) tableRow.add(cursor);
+    }
+    runStart = -1;
+  }
   type Segment = { full: Line | null; columns: Line[][] };
   const segments: Segment[] = [];
   const blankColumns = (): Line[][] => Array.from({ length: gutters.length + 1 }, () => []);
@@ -326,28 +432,28 @@ export function linesFromPage(page: RawPage): Line[] {
       columns = blankColumns();
     }
   };
-  for (const band of bands) {
+  bands.forEach((band, index) => {
     const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
     if (y <= 0.055 || y >= 0.94) {
       const line = lineFromGlyphs(page, band);
-      if (!line) continue;
+      if (!line) return;
       if (y <= 0.1) header.push(line);
       else footer.push(line);
-      continue;
+      return;
     }
     const cells = splitAtGutters(band, gutters);
-    if (overlapsAnyGutter(band, gutters) || isTableCells(cells)) {
+    if (overlapsAnyGutter(band, gutters) || tableRow.has(index)) {
       const line = lineFromGlyphs(page, band);
-      if (!line) continue;
+      if (!line) return;
       flushColumns();
       segments.push({ full: line, columns: [] });
-      continue;
+      return;
     }
-    cells.forEach((cell, index) => {
+    cells.forEach((cell, cellIndex) => {
       const line = lineFromGlyphs(page, cell);
-      if (line) columns[index]!.push(line);
+      if (line) columns[cellIndex]!.push(line);
     });
-  }
+  });
   flushColumns();
   const ordered = [...header];
   for (const segment of segments) {
@@ -459,6 +565,14 @@ function isHeadingLine(line: Line, bodySize: number): boolean {
   return line.bold && line.fontSize >= bodySize * 0.98 && words.length <= 12;
 }
 
+function columnBodySize(line: Line, lines: Line[]): number {
+  const peers = lines.filter(
+    (other) => other.page === line.page && Math.abs(other.x - line.x) <= Math.max(18, line.fontSize * 0.8),
+  );
+  const sample = peers.length >= 3 ? peers : lines.filter((other) => other.page === line.page);
+  return commonFontSize((sample.length ? sample : [line]).map((item) => item.fontSize));
+}
+
 export function linesToParagraphs(lines: Line[]): Paragraph[] {
   const bodySize = commonFontSize(lines.map((line) => line.fontSize));
   const widths = lines.map((line) => line.width).filter((width) => width > 0);
@@ -473,13 +587,14 @@ export function linesToParagraphs(lines: Line[]): Paragraph[] {
     text = text.replace(/\s+/g, ' ').trim();
     const words = text.split(/\s+/).filter(Boolean);
     const fontSize = median(buffer.map((line) => line.fontSize)) || bodySize;
+    const localBody = columnBodySize(buffer[0]!, lines);
     const bold = buffer.every((line) => line.bold) || buffer[0]!.bold;
     const heading =
       words.length > 0 &&
       words.length <= 14 &&
       text.length <= 90 &&
       !/[,:;]$/.test(text) &&
-      (fontSize >= bodySize * 1.15 || (bold && fontSize >= bodySize * 0.98 && words.length <= 12));
+      (fontSize >= localBody * 1.15 || (bold && fontSize >= localBody * 0.98 && words.length <= 12));
     if (text) {
       paragraphs.push({
         text,
@@ -506,7 +621,8 @@ export function linesToParagraphs(lines: Line[]): Paragraph[] {
     const shortLine = previous.width < contentWidth * 0.82;
     const pageBreak = !samePage && endedSentence;
     const headingBreak =
-      (isHeadingLine(line, bodySize) || isHeadingLine(previous, bodySize)) && !previous.text.endsWith('-');
+      (isHeadingLine(line, columnBodySize(line, lines)) || isHeadingLine(previous, columnBodySize(previous, lines))) &&
+      !previous.text.endsWith('-');
     if (bigGap || pageBreak || headingBreak || (shortLine && endedSentence)) flush();
     buffer.push(line);
   }

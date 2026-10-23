@@ -37,6 +37,57 @@ function isTextItem(item: unknown): item is TextItem {
   return typeof record.str === 'string' && Array.isArray(record.transform);
 }
 
+function multiplyMatrix(left: number[], right: number[]): number[] {
+  return [
+    left[0]! * right[0]! + left[2]! * right[1]!,
+    left[1]! * right[0]! + left[3]! * right[1]!,
+    left[0]! * right[2]! + left[2]! * right[3]!,
+    left[1]! * right[2]! + left[3]! * right[3]!,
+    left[0]! * right[4]! + left[2]! * right[5]! + left[4]!,
+    left[1]! * right[4]! + left[3]! * right[5]! + left[5]!,
+  ];
+}
+
+function glyphPlacement(
+  item: TextItem,
+  viewport: { transform: number[]; width: number; height: number },
+): { x: number; y: number; width: number; height: number; fontSize: number } {
+  const tx = multiplyMatrix(viewport.transform, item.transform);
+  const baseX = tx[0] ?? 0;
+  const baseY = tx[1] ?? 0;
+  const vertX = tx[2] ?? 0;
+  const vertY = tx[3] ?? 0;
+  const originX = tx[4] ?? 0;
+  const originY = tx[5] ?? 0;
+  const baseLen = Math.hypot(baseX, baseY) || 1;
+  const rawBase = Math.hypot(item.transform[0] ?? 0, item.transform[1] ?? 0) || 1;
+  const fontSize = Math.hypot(vertX, vertY) || item.height || baseLen || 12;
+  const advance =
+    (item.width > 0 ? item.width : Math.max(1, item.str.length * fontSize * 0.45)) * (baseLen / rawBase);
+  const ux = baseX / baseLen;
+  const uy = baseY / baseLen;
+  if (Math.abs(ux) >= Math.abs(uy)) {
+    const endX = originX + ux * advance;
+    const top = Math.min(originY, originY + vertY, originY + uy * advance, originY + uy * advance + vertY);
+    return {
+      x: Math.min(originX, endX),
+      y: top,
+      width: Math.max(1, Math.abs(endX - originX)),
+      height: fontSize,
+      fontSize,
+    };
+  }
+  const readingX = uy >= 0 ? originY : viewport.height - originY;
+  const readingY = uy >= 0 ? viewport.width - originX : originX;
+  return {
+    x: readingX,
+    y: readingY,
+    width: Math.max(1, advance),
+    height: fontSize,
+    fontSize,
+  };
+}
+
 function destName(value: unknown): string {
   if (!value) return '';
   if (typeof value === 'string') return value;
@@ -99,20 +150,16 @@ export async function parsePdf(
     const glyphs: Glyph[] = [];
     for (const item of content.items) {
       if (!isTextItem(item) || !item.str) continue;
-      const transform = item.transform;
-      const fontHeight = Math.hypot(Number(transform[2] ?? 0), Number(transform[3] ?? 0)) || item.height || 12;
-      const x = Number(transform[4] ?? 0);
-      const baseline = Number(transform[5] ?? 0);
-      const height = item.height || fontHeight;
+      const placed = glyphPlacement(item, viewport);
       const style = styles[item.fontName];
       const family = style && 'fontFamily' in style ? String(style.fontFamily) : '';
       glyphs.push({
         text: item.str,
-        x,
-        y: Math.max(0, viewport.height - baseline - height),
-        width: item.width || Math.max(1, item.str.length * fontHeight * 0.45),
-        height,
-        fontSize: fontHeight,
+        x: placed.x,
+        y: Math.max(0, placed.y),
+        width: placed.width,
+        height: placed.height,
+        fontSize: placed.fontSize,
         fontName: `${item.fontName} ${family}`.trim(),
       });
     }

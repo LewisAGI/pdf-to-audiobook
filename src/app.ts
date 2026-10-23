@@ -14,7 +14,7 @@ import {
 import { formatClock, sanitizeResume } from './lib/resume';
 import { summarizeExtractive } from './lib/summary';
 import { endpointOrigin, normalizeEndpoint, readLlmKey, summarizeWithLlm, writeLlmKey } from './lib/llm';
-import { monotonicProgress } from './lib/model-progress';
+import { monotonicProgress, phaseProgress } from './lib/model-progress';
 import { recognizeGlyphs } from './lib/ocr';
 import { parsePdf } from './lib/pdf';
 import {
@@ -93,6 +93,7 @@ export class App {
   private playbackArmed = false;
   private silenceUrl = '';
   private progressMark = 0;
+  private armedChapterId = '';
   private pasteDraft = '';
   private renameDraft = '';
   private endpointDraft = '';
@@ -208,7 +209,8 @@ export class App {
     const playing = !this.priming && !this.audio.paused && !this.audio.ended;
     const playIcon = this.generating ? `<span class="stat">${Math.round((this.busy?.ratio ?? 0) * 100)}</span>` : playing ? icons.pause : icons.play;
     const playLabel = playing ? 'Pause' : 'Play';
-    return `<main class="shell" data-engine="${this.prefs.engine}" data-chapter="${escapeHtml(chapter?.id ?? '')}">
+    const armed = this.armedChapterId && this.armedChapterId === chapter?.id ? chapter.id : '';
+    return `<main class="shell" data-engine="${this.prefs.engine}" data-chapter="${escapeHtml(chapter?.id ?? '')}" data-armed="${escapeHtml(armed)}">
       <header class="top">
         ${iconButton('library', 'Library', icons.back)}
         <div class="top-actions">${iconButton('more', 'More', icons.more)}</div>
@@ -404,6 +406,7 @@ export class App {
       this.index = index;
       this.shownTime = 0;
       this.closeSheet();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       await this.playChapter(index, 0);
     } else if (action === 'rename') this.openSheet({ name: 'rename', index });
     else if (action === 'save-rename') await this.saveRename(index);
@@ -687,6 +690,7 @@ export class App {
       this.speak(chapter, time);
       return;
     }
+    this.armedChapterId = chapter.id;
     this.render();
     this.armPlayback();
     try {
@@ -794,10 +798,12 @@ export class App {
     const key = audioKey(chapter.id, this.prefs.voice, chapter.mode);
     const existing = await getAudio(key);
     if (existing?.complete) {
+      this.armedChapterId = '';
       const { readAudioBytes } = await import('./lib/storage');
       return readAudioBytes(this.book.id, key);
     }
     this.generating = true;
+    this.armedChapterId = '';
     this.progressMark = 0;
     const resumeFrom = existing && !existing.complete ? existing.sentencesDone : 0;
     const prior = resumeFrom > 0 && existing ? await loadAudioPcm(existing) : null;
@@ -814,7 +820,8 @@ export class App {
       resumeFrom: startFrom,
       prior: prior?.samples,
       priorRate: prior?.sampleRate,
-      onProgress: (progress) => this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', progress.ratio),
+      onProgress: (progress) =>
+        this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', phaseProgress(progress.phase, progress.ratio)),
       onSentence: async (update) => {
         if (this.chapters[this.index]?.id === chapter.id) {
           this.root.querySelector('main.shell')?.setAttribute('data-speaking', chapter.id);

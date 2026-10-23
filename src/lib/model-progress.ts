@@ -9,6 +9,12 @@ export type ModelProgressEvent = {
   progress?: number;
 };
 
+export function phaseProgress(phase: 'model' | 'speech', ratio: number): number {
+  const clamped = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0;
+  if (phase === 'model') return clamped * 0.3;
+  return 0.3 + clamped * 0.7;
+}
+
 export function monotonicProgress(previous: number, ratio: number): number {
   const prior = Number.isFinite(previous) ? Math.max(0, Math.min(1, previous)) : 0;
   if (!Number.isFinite(ratio)) return prior;

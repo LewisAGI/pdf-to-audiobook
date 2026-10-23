@@ -454,6 +454,22 @@ describe('cleaning', () => {
     }).map((line) => line.text);
     expect(table).toEqual(['Species Mon Tue Wed', 'Heron 14 12 9', 'Plover 40 38 41', 'Egret 2 4 5']);
     expect(table.join('\n')).not.toContain('Species Heron');
+    const oneRow = linesFromPage({
+      pageNumber: 1,
+      width: 612,
+      height: 792,
+      hasImages: false,
+      glyphs: [
+        glyph('The old ford was mapped in the spring of', 54, 180, 220),
+        glyph('The boat team counted every plover', 340, 180, 200),
+        glyph('1890.', 54, 200, 36),
+        glyph('of 40.', 340, 200, 40),
+        glyph('It has moved twice since that survey', 54, 230, 210),
+        glyph('Spoonbills were rarer that summer', 340, 230, 190),
+      ],
+    }).map((line) => line.text);
+    expect(oneRow.indexOf('1890.')).toBeLessThan(oneRow.indexOf('The boat team counted every plover'));
+    expect(oneRow).not.toContain('1890. of 40.');
   });
 
   it('keeps a heading on its own paragraph', () => {

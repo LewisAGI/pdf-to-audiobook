@@ -175,8 +175,35 @@ test('keeps the neural engine when jumping chapters during generation', async ({
   expect(arrivalId).toBeTruthy();
   await expect(speaking).toHaveAttribute('data-speaking', arrivalId!, { timeout: 15_000 });
   await page.getByRole('button', { name: 'Chapters' }).click();
+  await page.evaluate(() => {
+    const frames: { name: string; armed: string; stat: boolean; sheet: boolean }[] = [];
+    const take = () => {
+      frames.push({
+        name: document.querySelector('.chapter-name')?.textContent ?? '',
+        armed: document.querySelector('main.shell')?.getAttribute('data-armed') ?? '',
+        stat: Boolean(document.querySelector('.play .stat')),
+        sheet: Boolean(document.querySelector('.sheet')),
+      });
+    };
+    const observer = new MutationObserver(take);
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    (window as unknown as { __jumpFrames: typeof frames }).__jumpFrames = frames;
+  });
   await page.getByRole('button', { name: 'Departure' }).click();
   await expect(page.locator('.chapter-name')).toHaveText('Departure', { timeout: 1_000 });
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        (window as unknown as { __jumpFrames: { armed: string }[] }).__jumpFrames.some((frame) => frame.armed),
+      ),
+    )
+    .toBe(true);
+  const frames = await page.evaluate(
+    () => (window as unknown as { __jumpFrames: { name: string; armed: string; sheet: boolean }[] }).__jumpFrames,
+  );
+  const closed = frames.find((frame) => !frame.sheet);
+  expect(closed?.name).toBe('Departure');
+  expect(frames.some((frame) => frame.armed && frame.armed !== arrivalId)).toBe(true);
   await expect(speaking).toHaveAttribute('data-engine', 'kokoro');
   const chapterId = await speaking.getAttribute('data-chapter');
   expect(chapterId).toBeTruthy();
