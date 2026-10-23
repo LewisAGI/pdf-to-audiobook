@@ -203,6 +203,7 @@ test('keeps the neural engine when jumping chapters during generation', async ({
   );
   const closed = frames.find((frame) => !frame.sheet);
   expect(closed?.name).toBe('Departure');
+  expect(closed?.armed).toBe('');
   expect(frames.some((frame) => frame.armed && frame.armed !== arrivalId)).toBe(true);
   await expect(speaking).toHaveAttribute('data-engine', 'kokoro');
   const chapterId = await speaking.getAttribute('data-chapter');

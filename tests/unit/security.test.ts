@@ -27,10 +27,16 @@ describe('response headers', () => {
     const notices = readFileSync(new URL('../../public/THIRD_PARTY_NOTICES.txt', import.meta.url), 'utf8');
     expect(notices).toMatch(/lamejs/i);
     expect(notices).toMatch(/LGPL-3\.0/);
+    expect(notices).toMatch(/GNU LESSER GENERAL PUBLIC LICENSE/);
     expect(notices).toMatch(/eSpeak NG/);
     expect(notices).toMatch(/GPL-3\.0/);
+    expect(notices).toMatch(/GNU GENERAL PUBLIC LICENSE/);
+    expect(notices).toMatch(/Version 3, 29 June 2007/);
     expect(notices).toMatch(/ffmpeg/i);
     expect(notices).toMatch(/GPL-2\.0-or-later/);
+    expect(notices).toMatch(/Version 2, June 1991/);
+    expect(notices).toMatch(/phonemizer 1\.2\.1/);
+    expect(notices).toMatch(/onnxruntime-web 1\.22\.0-dev\.20250409-89f8206ba4/);
     expect(notices).toMatch(/pdf\.js/);
     expect(notices).toMatch(/Apache-2\.0/);
     expect(notices).toMatch(/onnxruntime-web/);

@@ -187,15 +187,16 @@ function interWordGaps(bands: Glyph[][]): number[] {
 function gapThreshold(bands: Glyph[][]): number {
   const gaps = interWordGaps(bands);
   const spacing = gaps.length >= 4 ? median(gaps) : 2.5;
-  // A gutter has to clear ordinary word spacing, but justification can stretch
-  // those gaps past a narrow columnsep (LaTeX is 10pt, and an 8pt gutter still
-  // has to win). Cap the floor so it stays under that gutter. A fixed
-  // max(30pt, 6% of the page) misses the narrow-gutter fixtures.
-  return Math.min(7, Math.max(2.5, spacing * 0.45));
+  // A candidate opening has to be well above ordinary word spacing, about
+  // 1.5× the median gap inside the lines. Justification can stretch those
+  // gaps past a narrow columnsep, so the floor is capped at 7pt and an 8pt
+  // gutter still qualifies. Rivers that only share a slice of a word gap are
+  // dropped later, when the shared width is compared with the gap itself.
+  return Math.min(7, Math.max(2.5, spacing * 1.5));
 }
 
 function minimumColumnBands(): number {
-  return 3;
+  return 2;
 }
 
 function minimumColumnWidth(pageWidth: number): number {
@@ -264,7 +265,7 @@ function maxCover(cover: number[]): number {
   return cover.reduce((best, value) => Math.max(best, value), 0);
 }
 
-function gutterFromRegion(bands: Glyph[][], region: Span, minGap: number): number | null {
+function gutterFromRegion(bands: Glyph[][], region: Span, minGap: number): { at: number; width: number } | null {
   const kept = bands.filter((band) => !bandCrosses(band, region, minGap));
   let maxRight = Number.NEGATIVE_INFINITY;
   let minLeft = Number.POSITIVE_INFINITY;
@@ -283,10 +284,36 @@ function gutterFromRegion(bands: Glyph[][], region: Span, minGap: number): numbe
     }
   }
   if (leftCount < 2 || rightCount < 2 || !(minLeft > maxRight) || minLeft - maxRight < minGap * 0.5) return null;
-  return (maxRight + minLeft) / 2;
+  const width = minLeft - maxRight;
+  return { at: (maxRight + minLeft) / 2, width };
 }
 
-function columnInkWidth(bands: Glyph[][], low: number, high: number): number {
+function splitClearsWordGaps(bands: Glyph[][], gutter: number, width: number): boolean {
+  let narrowest = Number.POSITIVE_INFINITY;
+  let hits = 0;
+  for (const band of bands) {
+    const sorted = [...band].sort((a, b) => a.x - b.x);
+    for (let index = 1; index < sorted.length; index += 1) {
+      const previous = sorted[index - 1]!;
+      const next = sorted[index]!;
+      const left = previous.x + previous.width;
+      const right = next.x;
+      const gap = right - left;
+      if (gap <= 0.4 || left >= gutter || right <= gutter) continue;
+      hits += 1;
+      narrowest = Math.min(narrowest, gap);
+    }
+  }
+  // Sidebars and mixed sizes do not share a baseline, so no word gap crosses
+  // the gutter. The region width is the whole opening.
+  if (hits < 2) return true;
+  // A column split is the same opening on each line. A justified river is only
+  // the overlap of ordinary word gaps, and that overlap is narrower than every
+  // one of those gaps, so it is not a gutter.
+  return width >= narrowest * 0.82;
+}
+
+function columnInkBounds(bands: Glyph[][], low: number, high: number): { minX: number; maxX: number } | null {
   let minX = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   for (const band of bands) {
@@ -297,14 +324,25 @@ function columnInkWidth(bands: Glyph[][], low: number, high: number): number {
       maxX = Math.max(maxX, glyph.x + glyph.width);
     }
   }
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return 0;
-  return maxX - minX;
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
+  return { minX, maxX };
 }
 
 function columnsWideEnough(pageWidth: number, bands: Glyph[][], gutters: number[]): boolean {
   const minWidth = minimumColumnWidth(pageWidth);
   const edges = [Number.NEGATIVE_INFINITY, ...gutters, Number.POSITIVE_INFINITY];
-  return edges.slice(0, -1).every((low, index) => columnInkWidth(bands, low, edges[index + 1]!) >= minWidth);
+  return edges.slice(0, -1).every((low, index) => {
+    const high = edges[index + 1]!;
+    const bounds = columnInkBounds(bands, low, high);
+    if (!bounds) return false;
+    const width = bounds.maxX - bounds.minX;
+    if (width >= minWidth) return true;
+    // A note in the outer margin can be under an inch. A code column sits in
+    // the text block, and that still has to clear an inch or the block stays
+    // one column.
+    const inMargin = bounds.maxX < pageWidth * 0.16 || bounds.minX > pageWidth * 0.8;
+    return inMargin && width >= 48;
+  });
 }
 
 function sideRegion(bands: Glyph[][], pageWidth: number, minGap: number): Span[] {
@@ -357,16 +395,37 @@ function columnGutters(page: RawPage, glyphs: Glyph[]): number[] {
       regions = again;
     }
   }
+  const gutters = guttersFromRegions(bands, regions, minGap, page.width);
+  if (!gutters.length || !columnsWideEnough(page.width, bands, gutters)) return [];
+  // A wide aligned gap inside a code block (the '=' column) still has to fail
+  // when a narrower aligned gap leaves a column under an inch. That narrower
+  // gap can sit below the word-spacing floor, so probe it separately and let
+  // it veto the split rather than become a gutter of its own.
+  const fineRegions = whitespaceRuns(bands, page.width, 2.5);
+  const fine = guttersFromRegions(bands, fineRegions, 2.5, page.width);
+  const probe = uniqueXs([...gutters, ...fine], page.width);
+  if (!columnsWideEnough(page.width, bands, probe)) return [];
+  return gutters;
+}
+
+function uniqueXs(values: number[], pageWidth: number): number[] {
+  const kept: number[] = [];
+  for (const value of [...values].sort((a, b) => a - b)) {
+    if (kept.some((existing) => Math.abs(existing - value) < pageWidth * 0.02)) continue;
+    kept.push(value);
+  }
+  return kept;
+}
+
+function guttersFromRegions(bands: Glyph[][], regions: Span[], minGap: number, pageWidth: number): number[] {
   const gutters: number[] = [];
   for (const region of regions) {
     const gutter = gutterFromRegion(bands, region, minGap);
-    if (gutter == null) continue;
-    if (gutters.some((existing) => Math.abs(existing - gutter) < page.width * 0.08)) continue;
-    gutters.push(gutter);
+    if (gutter == null || !splitClearsWordGaps(bands, gutter.at, gutter.width)) continue;
+    if (gutters.some((existing) => Math.abs(existing - gutter.at) < pageWidth * 0.08)) continue;
+    gutters.push(gutter.at);
   }
-  const ordered = gutters.sort((a, b) => a - b);
-  if (!ordered.length || !columnsWideEnough(page.width, bands, ordered)) return [];
-  return ordered;
+  return gutters.sort((a, b) => a - b);
 }
 
 function overlapsAnyGutter(glyphs: Glyph[], gutters: number[]): boolean {
@@ -557,6 +616,10 @@ export function dehyphenate(text: string): string {
   return out.replace(/[ \t]+\n/g, '\n').trim();
 }
 
+function isMonospace(fontName: string): boolean {
+  return /mono|courier|typewriter|consolas|menlo/i.test(fontName);
+}
+
 function isHeadingLine(line: Line, bodySize: number): boolean {
   const words = line.text.split(/\s+/).filter(Boolean);
   if (words.length > 14 || line.text.length > 90) return false;
@@ -566,10 +629,14 @@ function isHeadingLine(line: Line, bodySize: number): boolean {
 }
 
 function columnBodySize(line: Line, lines: Line[]): number {
-  const peers = lines.filter(
-    (other) => other.page === line.page && Math.abs(other.x - line.x) <= Math.max(18, line.fontSize * 0.8),
-  );
-  const sample = peers.length >= 3 ? peers : lines.filter((other) => other.page === line.page);
+  const samePage = lines.filter((other) => other.page === line.page);
+  // A Courier table is smaller than the prose around it. Body size for a
+  // proportional line comes from the proportional lines, so the sentence
+  // after the table stays in the paragraph.
+  const proportional = samePage.filter((other) => !isMonospace(other.fontName));
+  const pool = !isMonospace(line.fontName) && proportional.length >= 2 ? proportional : samePage;
+  const peers = pool.filter((other) => Math.abs(other.x - line.x) <= Math.max(18, line.fontSize * 0.8));
+  const sample = peers.length >= 3 ? peers : pool;
   return commonFontSize((sample.length ? sample : [line]).map((item) => item.fontSize));
 }
 

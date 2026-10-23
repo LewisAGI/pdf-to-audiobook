@@ -668,6 +668,15 @@ export class App {
     chapter.summaryKind = 'extractive';
   }
 
+  private armChapter(id: string) {
+    this.armedChapterId = id;
+    const shell = this.root.querySelector('main.shell');
+    if (!shell) return;
+    const chapter = this.chapters[this.index];
+    const armed = id && chapter && chapter.id === id ? id : '';
+    shell.setAttribute('data-armed', armed);
+  }
+
   private async togglePlay() {
     if (!this.book) return;
     if (!this.audio.paused && this.audio.src) {
@@ -696,9 +705,13 @@ export class App {
       this.speak(chapter, time);
       return;
     }
-    this.armedChapterId = chapter.id;
-    this.render();
+    this.armChapter(chapter.id);
     const unlock = this.armPlayback();
+    // The click that started playback is still checking its target. Replacing
+    // the button here makes WebKit retry that click until the test times out,
+    // so the armed flag is set on the existing shell and the render waits.
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    if (token !== this.playToken) return;
     try {
       const wav = await this.ensureAudio(chapter);
       if (token !== this.playToken) return;
@@ -810,12 +823,12 @@ export class App {
     const key = audioKey(chapter.id, this.prefs.voice, chapter.mode);
     const existing = await getAudio(key);
     if (existing?.complete) {
-      this.armedChapterId = '';
+      this.armChapter('');
       const { readAudioBytes } = await import('./lib/storage');
       return readAudioBytes(this.book.id, key);
     }
     this.generating = true;
-    this.armedChapterId = '';
+    this.armChapter('');
     this.progressMark = 0;
     const resumeFrom = existing && !existing.complete ? existing.sentencesDone : 0;
     const prior = resumeFrom > 0 && existing ? await loadAudioPcm(existing) : null;

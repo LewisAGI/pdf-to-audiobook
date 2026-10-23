@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { cleanPages, type Paragraph } from '../../src/lib/clean';
+import { cleanPages, linesToParagraphs, type Line, type Paragraph } from '../../src/lib/clean';
 import {
   detectByLength,
   detectChapters,
@@ -200,13 +200,108 @@ describe('chapter detection', () => {
   });
 
   it('does not turn justified word spacing or rivers into columns', async () => {
-    for (const name of ['rivers.pdf', 'justified-words.pdf']) {
+    const rivers = await parsed('rivers.pdf');
+    const riverText = rivers.paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(riverText).not.toMatch(/Morning\s+shallow/);
+    expect(riverText).toMatch(/heron/);
+    await rivers.pdf.destroy();
+
+    const justified = await parsed('justified-words.pdf');
+    const text = justified.paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(text).toContain('dawn and walked north along');
+    expect(text).not.toContain('dawn and they');
+    expect(text.indexOf('walked north')).toBeLessThan(text.indexOf('they saw'));
+    await justified.pdf.destroy();
+  });
+
+  it('reads two-line columns and loose gutters down the left side first', async () => {
+    for (const name of [
+      'short-last-2.pdf',
+      'short-intro-2.pdf',
+      'left5-right2.pdf',
+      'left2-right5.pdf',
+      'left3-right3.pdf',
+      'loose-w6-g8.pdf',
+      'loose-w6-g10.pdf',
+      'loose-w4-g8.pdf',
+    ]) {
       const { pdf, paragraphs } = await parsed(name);
       const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
-      expect(text, name).not.toMatch(/Morning\s+shallow/);
-      expect(text, name).toMatch(/heron/);
+      expect(text, name).toContain('walked north');
+      expect(text.indexOf('counting'), name).toBeLessThan(text.indexOf('In the afternoon'));
+      expect(text, name).not.toContain('walked In the afternoon');
       await pdf.destroy();
     }
+  });
+
+  it('reads a sidebar of at least an inch after the main column', async () => {
+    for (const name of ['sidebar-80.pdf', 'sidebar-100.pdf', 'sidebar-60.pdf', 'sidebar-70.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      expect(text.indexOf('found consistent'), name).toBeLessThan(text.indexOf('Herons nest'));
+      expect(text, name).toContain('Herons nest');
+      await pdf.destroy();
+    }
+  });
+
+  it('keeps the line after a monospace table in the same chapter', async () => {
+    for (const name of ['ascii-table.pdf', 'ascii-table-num.pdf', 'code-long.pdf', 'code-long-tokens.pdf']) {
+      const { pdf, paragraphs } = await parsed(name);
+      const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+      const titles = detectChapters(paragraphs, pdf.outline).map((chapter) => chapter.title).join('\n');
+      if (name.startsWith('ascii')) {
+        expect(text.indexOf('Great egret'), name).toBeLessThan(text.indexOf('Evening counts were lower'));
+        expect(titles, name).not.toMatch(/Evening counts were lower/);
+      } else {
+        expect(text, name).toMatch(/totalHerons\s+=\s+heronsMorning/);
+        expect(text.indexOf('grandTotalOfBirds'), name).toBeLessThan(text.indexOf('After that the totals'));
+        expect(titles, name).not.toMatch(/After that the totals/);
+      }
+      await pdf.destroy();
+    }
+  });
+
+  it('keeps a definition with the term that introduces it', async () => {
+    const { pdf, paragraphs } = await parsed('definition-list.pdf');
+    const text = paragraphs.map((paragraph) => paragraph.text).join('\n');
+    expect(text.indexOf('Heron')).toBeLessThan(text.indexOf('Plover'));
+    expect(text.indexOf('Plover')).toBeLessThan(text.indexOf('Spoonbill'));
+    expect(text.indexOf('A tall wading bird')).toBeLessThan(text.indexOf('A small shorebird'));
+    await pdf.destroy();
+  });
+
+  it('sizes a column from its own body, not the other column', () => {
+    const line = (text: string, x: number, y: number, fontSize: number, fontName = 'serif'): Line => ({
+      text,
+      page: 1,
+      y,
+      yNorm: y / 792,
+      x,
+      width: 220,
+      fontSize,
+      fontName,
+      bold: false,
+      height: fontSize,
+      pageWidth: 612,
+      pageHeight: 792,
+    });
+    const lines = [
+      line('Left column line one of the field notes.', 72, 100, 10),
+      line('Left column line two of the field notes.', 72, 116, 10),
+      line('Left column line three of the field notes.', 72, 132, 10),
+      line('Left column line four of the field notes.', 72, 148, 10),
+      line('Left column line five of the field notes.', 72, 164, 10),
+      line('Left column line six of the field notes.', 72, 180, 10),
+      line('The afternoon team walked north along the bank.', 320, 100, 13),
+      line('They counted spoonbills before the light failed.', 320, 118, 13),
+      line('The salt flats were quiet after the boat left.', 320, 136, 13),
+      line('Walking Team', 200, 400, 22),
+    ];
+    const paragraphs = linesToParagraphs(lines);
+    const right = paragraphs.filter((paragraph) => /afternoon|spoonbills|salt flats/.test(paragraph.text));
+    expect(right.length).toBeGreaterThan(0);
+    expect(right.every((paragraph) => paragraph.kind === 'body')).toBe(true);
+    expect(paragraphs.some((paragraph) => paragraph.kind === 'heading' && paragraph.text === 'Walking Team')).toBe(true);
   });
 
   it('keeps a single numeric line ending inside its column', async () => {

@@ -35,3 +35,8 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
         run: npm run test:e2e
+
+      - name: Replay WebKit play tests
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+        run: npx playwright test tests/e2e/audiobook.spec.ts --project=webkit --project=iphone-landscape --grep "upload, chapters, play, resume|invalidates cached audio" --repeat-each=4
