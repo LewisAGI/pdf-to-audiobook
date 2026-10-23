@@ -92,6 +92,8 @@ export function installTooltips(root: ParentNode) {
   });
   root.addEventListener('focusout', () => hideTip());
   root.addEventListener('pointerdown', (event) => {
+    const pointer = event as PointerEvent;
+    if (pointer.pointerType === 'mouse') return;
     const target = (event.target as Element | null)?.closest?.('[data-tip]');
     if (!target) return;
     window.clearTimeout(longTimer);

@@ -90,8 +90,9 @@ export class App {
   private generating = false;
   private playToken = 0;
   private priming = false;
-  private playbackArmed = false;
   private silenceUrl = '';
+  private unlockPromise: Promise<void> | null = null;
+  private unlockGeneration = 0;
   private progressMark = 0;
   private armedChapterId = '';
   private pasteDraft = '';
@@ -542,16 +543,20 @@ export class App {
   private async importPdf(file: File) {
     this.sheet = null;
     this.progressMark = 0;
+    let acceptProgress = true;
+    const report = (ratio: number, label: string) => {
+      if (acceptProgress) this.setBusy(label, ratio);
+    };
     this.setBusy('Reading', 0.02);
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const parsed = await parsePdf(bytes, {}, (ratio, label) => this.setBusy(label, ratio));
+      const parsed = await parsePdf(bytes, {}, report);
       const pages: RawPage[] = [];
       for (const page of parsed.pages) {
         if (pageNeedsOcr(page)) {
-          this.setBusy('OCR', 0.7);
+          report(0.7, 'OCR');
           const canvas = await parsed.renderPage(page.pageNumber, 2);
-          const glyphs = await recognizeGlyphs(canvas, (ratio) => this.setBusy('OCR', 0.7 + ratio * 0.2));
+          const glyphs = await recognizeGlyphs(canvas, (ratio) => report(0.7 + ratio * 0.2, 'OCR'));
           pages.push({ ...page, width: canvas.width, height: canvas.height, glyphs, hasImages: false });
         } else pages.push(page);
       }
@@ -562,8 +567,9 @@ export class App {
       await saveBook(book, chapters);
       await writeSourcePdf(book.id, bytes);
       await parsed.destroy();
-      this.books = await listBooks();
+      acceptProgress = false;
       this.busy = null;
+      this.books = await listBooks();
       await this.openBook(book.id, true);
     } catch (error) {
       this.busy = null;
@@ -692,38 +698,44 @@ export class App {
     }
     this.armedChapterId = chapter.id;
     this.render();
-    this.armPlayback();
+    const unlock = this.armPlayback();
     try {
       const wav = await this.ensureAudio(chapter);
       if (token !== this.playToken) return;
       if (!wav) return;
+      await unlock;
+      if (token !== this.playToken) return;
       if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
       const copy = new Uint8Array(wav.byteLength);
       copy.set(wav);
       const url = URL.createObjectURL(new Blob([copy], { type: 'audio/wav' }));
       this.objectUrl = url;
-      this.priming = false;
-      this.audio.loop = false;
+      this.unlockGeneration += 1;
       this.audio.playbackRate = clampRate(this.prefs.rate);
-      await new Promise<void>((resolve) => {
-        const done = () => {
-          this.audio.removeEventListener('loadedmetadata', done);
-          resolve();
-        };
-        this.audio.addEventListener('loadedmetadata', done);
-        this.audio.src = url;
-        if (this.audio.currentSrc === url && this.audio.readyState >= 1) done();
-      });
-      const point = sanitizeResume({ chapterIndex: index, time }, this.chapters, this.audio.duration);
-      this.audio.currentTime = point.time;
+      await this.loadSource(url);
+      if (token !== this.playToken) return;
+      const point = sanitizeResume(
+        { chapterIndex: index, time },
+        this.chapters,
+        Number.isFinite(this.audio.duration) ? this.audio.duration : null,
+      );
       this.shownTime = point.time;
-      await this.audio.play();
+      if (point.time > 0) {
+        try {
+          this.audio.currentTime = point.time;
+        } catch {
+          /* WebKit can reject a seek until the new source is seekable. */
+        }
+      }
+      this.priming = false;
+      await this.startPlayback();
       this.render();
     } catch (error) {
       if (token !== this.playToken || isAbortError(error)) {
         if (token === this.playToken) {
           this.generating = false;
           this.busy = null;
+          this.priming = false;
           this.render();
         }
         return;
@@ -1059,15 +1071,95 @@ export class App {
     return this.silenceUrl;
   }
 
-  private armPlayback() {
-    if (this.playbackArmed) return;
-    this.playbackArmed = true;
+  private armPlayback(): Promise<void> {
+    if (this.unlockPromise) return this.unlockPromise;
     this.priming = true;
     this.audio.loop = true;
     this.audio.src = this.silenceSrc();
-    void this.audio.play().catch(() => {
-      this.priming = false;
-      this.playbackArmed = false;
+    const generation = this.unlockGeneration;
+    let settled = false;
+    let finish = () => {
+      settled = true;
+    };
+    const pending = new Promise<void>((resolve) => {
+      finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+    });
+    this.unlockPromise = pending;
+    const settle = () => {
+      if (generation !== this.unlockGeneration) return;
+      finish();
+    };
+    void this.audio.play().then(settle, () => {
+      if (generation !== this.unlockGeneration) return;
+      if (this.priming) {
+        this.priming = false;
+        this.unlockPromise = null;
+      }
+      finish();
+    });
+    window.setTimeout(settle, 2000);
+    return pending;
+  }
+
+  private loadSource(url: string): Promise<void> {
+    const audio = this.audio;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: DOMException) => {
+        if (settled) return;
+        settled = true;
+        audio.removeEventListener('loadedmetadata', onReady);
+        audio.removeEventListener('loadeddata', onReady);
+        audio.removeEventListener('canplay', onReady);
+        audio.removeEventListener('error', onError);
+        window.clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onReady = () => {
+        if (audio.readyState >= 1) finish();
+      };
+      const onError = () => {
+        if (audio.readyState >= 1) finish();
+      };
+      const timer = window.setTimeout(() => {
+        if (audio.readyState >= 1) finish();
+        else finish(new DOMException('Audio failed to load', 'AbortError'));
+      }, 4000);
+      audio.addEventListener('loadedmetadata', onReady);
+      audio.addEventListener('loadeddata', onReady);
+      audio.addEventListener('canplay', onReady);
+      audio.addEventListener('error', onError);
+      audio.pause();
+      audio.loop = false;
+      audio.src = url;
+      audio.load();
+      if (audio.readyState >= 1) finish();
+    });
+  }
+
+  private startPlayback(): Promise<void> {
+    const audio = this.audio;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        if (audio.paused) reject(new DOMException('Audio failed to load', 'AbortError'));
+        else resolve();
+      }, 4000);
+      audio.play().then(
+        () => {
+          window.clearTimeout(timer);
+          resolve();
+        },
+        (error: unknown) => {
+          window.clearTimeout(timer);
+          if (!audio.paused) resolve();
+          else reject(error);
+        },
+      );
     });
   }
 
