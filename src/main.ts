@@ -9,7 +9,17 @@ if (root instanceof HTMLElement && audio instanceof HTMLAudioElement) {
   void app.start();
 }
 
-if (import.meta.env.PROD && !navigator.webdriver) {
+function allowServiceWorker(): boolean {
+  if (!import.meta.env.PROD) return false;
+  try {
+    if (localStorage.getItem('pta-sw') === '1') return true;
+  } catch {
+    /* storage unavailable */
+  }
+  return !navigator.webdriver;
+}
+
+if (allowServiceWorker()) {
   void import('virtual:pwa-register').then(({ registerSW }) => {
     registerSW({ immediate: true });
   });

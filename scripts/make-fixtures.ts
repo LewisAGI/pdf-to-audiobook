@@ -153,9 +153,47 @@ async function scannedPdf(): Promise<Uint8Array> {
   return doc.save();
 }
 
+async function referencesPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Return Book');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const opening = doc.addPage([612, 792]);
+  const references = doc.addPage([612, 792]);
+  const returning = doc.addPage([612, 792]);
+  opening.drawText('Opening', { x: 72, y: 700, size: 22, font: bold });
+  opening.drawText('The river kept its name.', { x: 72, y: 660, size: 12, font });
+  references.drawText('References', { x: 72, y: 700, size: 22, font: bold });
+  references.drawText('Smith, A. A history of maps.', { x: 72, y: 660, size: 12, font });
+  returning.drawText('The Return', { x: 72, y: 700, size: 22, font: bold });
+  returning.drawText('They came back at dusk.', { x: 72, y: 660, size: 12, font });
+  return doc.save();
+}
+
+async function columnsPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle('Two Columns');
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
+  const page = doc.addPage([612, 792]);
+  page.drawText('Columns', { x: 72, y: 760, size: 9, font });
+  page.drawText('4', { x: 300, y: 28, size: 9, font });
+  page.drawText('LEFTMARK', { x: 72, y: 700, size: 20, font: bold });
+  page.drawText('Left river stays.', { x: 72, y: 670, size: 12, font });
+  page.drawText('The left column kept reading.', { x: 72, y: 650, size: 12, font });
+  page.drawText('LEFTEND', { x: 72, y: 610, size: 20, font: bold });
+  page.drawText('RIGHTMARK', { x: 340, y: 700, size: 20, font: bold });
+  page.drawText('Right maps stay.', { x: 340, y: 670, size: 12, font });
+  page.drawText('The right column kept reading.', { x: 340, y: 650, size: 12, font });
+  page.drawText('RIGHTEND', { x: 340, y: 610, size: 20, font: bold });
+  return doc.save();
+}
+
 await mkdir(outDir, { recursive: true });
 await writeFile(path.join(outDir, 'outline.pdf'), await outlinePdf());
 await writeFile(path.join(outDir, 'headings.pdf'), await headingsPdf());
 await writeFile(path.join(outDir, 'plain.pdf'), await plainPdf());
 await writeFile(path.join(outDir, 'scanned.pdf'), await scannedPdf());
+await writeFile(path.join(outDir, 'references.pdf'), await referencesPdf());
+await writeFile(path.join(outDir, 'columns.pdf'), await columnsPdf());
 console.log('fixtures written');

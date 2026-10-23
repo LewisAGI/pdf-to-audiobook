@@ -106,10 +106,13 @@ export function tone(sampleRate: number, seconds: number, frequency = 220): Floa
   return out;
 }
 
+export function stubSeconds(text: string): number {
+  return Math.min(48, Math.max(16, 6 + text.length / 8));
+}
+
 export function stubSpeech(text: string): WavData {
-  const seconds = 12;
   const sampleRate = 16000;
-  return { samples: tone(sampleRate, seconds, text.length % 2 === 0 ? 196 : 247), sampleRate };
+  return { samples: tone(sampleRate, stubSeconds(text), text.length % 2 === 0 ? 196 : 247), sampleRate };
 }
 
 const LAME_RATES = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];

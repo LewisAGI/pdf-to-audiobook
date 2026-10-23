@@ -3,6 +3,7 @@ import { concatFloats, decodeWav, encodeWav, silence } from './audio';
 import { encodeAac } from './aac';
 import { buildM4b, type M4bChapter } from './m4b';
 import { encodeMp3 } from './mp3';
+import { StorageQuotaError } from './storage';
 
 export type ExportChapter = {
   title: string;
@@ -15,19 +16,42 @@ export function safeName(name: string): string {
   return (cleaned || 'chapter').slice(0, 60);
 }
 
+export function mp3EntryName(index: number, count: number, title: string): string {
+  const width = Math.max(2, String(Math.max(count, 1)).length);
+  return `${String(index + 1).padStart(width, '0')} ${safeName(title)}.mp3`;
+}
+
+export function forceFfmpeg(): boolean {
+  if (!(import.meta.env.DEV || import.meta.env.MODE === 'test')) return false;
+  try {
+    if (localStorage.getItem('pta-encoder') === 'ffmpeg') return true;
+    return new URLSearchParams(location.search).get('encoder') === 'ffmpeg';
+  } catch {
+    return false;
+  }
+}
+
 export async function exportMp3Zip(title: string, chapters: ExportChapter[]): Promise<{ blob: Blob; filename: string }> {
   const zip = new JSZip();
   chapters.forEach((chapter, index) => {
     const mp3 = encodeMp3(chapter.samples, chapter.sampleRate);
-    const base = `${String(index + 1).padStart(2, '0')} ${safeName(chapter.title)}.mp3`;
-    zip.file(base, mp3);
+    zip.file(mp3EntryName(index, chapters.length, chapter.title), mp3);
   });
   const blob = await zip.generateAsync({ type: 'blob' });
   return { blob, filename: `${safeName(title)}.zip` };
 }
 
+const MAX_JOIN_BYTES = 1_500_000_000;
+
 export function joinForM4b(chapters: ExportChapter[]): { samples: Float32Array; sampleRate: number; chapters: M4bChapter[] } {
   const sampleRate = 44100;
+  let estimate = 0;
+  chapters.forEach((chapter, index) => {
+    const rate = chapter.sampleRate || sampleRate;
+    estimate += Math.max(1, Math.round((chapter.samples.length * sampleRate) / rate)) * 4;
+    if (index < chapters.length - 1) estimate += Math.round(sampleRate * 0.15) * 4;
+    if (estimate > MAX_JOIN_BYTES) throw new StorageQuotaError();
+  });
   const pieces: Float32Array[] = [];
   const markers: M4bChapter[] = [];
   let cursor = 0;
@@ -57,7 +81,7 @@ export function joinForM4b(chapters: ExportChapter[]): { samples: Float32Array; 
 
 export async function exportM4b(title: string, chapters: ExportChapter[]): Promise<{ blob: Blob; filename: string }> {
   const joined = joinForM4b(chapters);
-  const encoded = await encodeAac(joined.samples, joined.sampleRate);
+  const encoded = forceFfmpeg() ? null : await encodeAac(joined.samples, joined.sampleRate);
   if (!encoded) {
     const ffmpeg = await encodeWithFfmpeg(joined.samples, joined.sampleRate, joined.chapters);
     return { blob: bytesToBlob(ffmpeg, 'audio/mp4'), filename: `${safeName(title)}.m4b` };
@@ -76,7 +100,7 @@ async function encodeWithFfmpeg(samples: Float32Array, sampleRate: number, chapt
   const { FFmpeg } = await import('@ffmpeg/ffmpeg');
   const ffmpeg = new FFmpeg();
   const coreVersion = '0.12.10';
-  const base = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/umd`;
+  const base = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${coreVersion}/dist/esm`;
   const worker = (await import('@ffmpeg/ffmpeg/worker?url')).default as string;
   const toBlob = async (url: string, type: string) => {
     const response = await fetch(url);
@@ -110,13 +134,23 @@ async function encodeWithFfmpeg(samples: Float32Array, sampleRate: number, chapt
   return out instanceof Uint8Array ? out : new Uint8Array(out as unknown as ArrayBuffer);
 }
 
-function ffmetadata(chapters: M4bChapter[], durationSeconds: number): string {
+export function escapeFfmeta(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/[=;#]/g, (char) => `\\${char}`);
+}
+
+export function ffmetadata(chapters: M4bChapter[], durationSeconds: number): string {
   const lines = [';FFMETADATA1'];
   chapters.forEach((chapter, index) => {
     const start = Math.round(chapter.startMs);
     const endMs =
       index + 1 < chapters.length ? Math.round(chapters[index + 1]!.startMs) : Math.round(durationSeconds * 1000);
-    lines.push('[CHAPTER]', 'TIMEBASE=1/1000', `START=${start}`, `END=${Math.max(start + 1, endMs)}`, `title=${chapter.title}`);
+    lines.push(
+      '[CHAPTER]',
+      'TIMEBASE=1/1000',
+      `START=${start}`,
+      `END=${Math.max(start + 1, endMs)}`,
+      `title=${escapeFfmeta(chapter.title)}`,
+    );
   });
   return lines.join('\n');
 }

@@ -111,6 +111,7 @@ button { cursor: pointer; }
   place-items: center;
   flex: 0 0 auto;
 }
+a.icon-btn { text-decoration: none; }
 .icon-btn svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .icon-btn:hover, .icon-btn:focus-visible { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .icon-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }

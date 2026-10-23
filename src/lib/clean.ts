@@ -40,13 +40,10 @@ export type Paragraph = {
   kind: 'body' | 'heading';
 };
 
-const PAGE_NUM =
-  /^(?:page\s+)?(?:[ivxlcdm]{1,8}|\d{1,4})(?:\s*(?:of|\/)\s*(?:[ivxlcdm]{1,8}|\d{1,4}))?[.\s]*$/i;
+const PAGE_NUM = /^(?:page\s+)?\d{1,3}(?:\s*(?:of|\/)\s*\d{1,3})?[.\s]*$/i;
 
 const REF_HEAD =
   /^(?:references|bibliography|works cited|literature cited|works consulted)\b[:.\s]*$/i;
-
-const AFTER_REF = /^(?:appendix|index|glossary|acknowledgements|acknowledgments)\b/i;
 
 const KEEP_HYPHEN = new Set([
   'well-known',
@@ -109,10 +106,10 @@ function dropMarkers(glyphs: Glyph[]): Glyph[] {
   });
 }
 
-export function linesFromPage(page: RawPage): Line[] {
-  const glyphs = dropMarkers(page.glyphs).sort((a, b) => a.y - b.y || a.x - b.x);
+function bandGlyphs(glyphs: Glyph[]): Glyph[][] {
+  const sorted = [...glyphs].sort((a, b) => a.y - b.y || a.x - b.x);
   const groups: Glyph[][] = [];
-  for (const glyph of glyphs) {
+  for (const glyph of sorted) {
     const current = groups[groups.length - 1];
     if (!current) {
       groups.push([glyph]);
@@ -123,42 +120,142 @@ export function linesFromPage(page: RawPage): Line[] {
     if (Math.abs(glyph.y - anchor) <= tolerance) current.push(glyph);
     else groups.push([glyph]);
   }
+  return groups;
+}
 
-  const lines: Line[] = [];
-  for (const group of groups) {
-    group.sort((a, b) => a.x - b.x);
-    let text = '';
-    for (let index = 0; index < group.length; index += 1) {
-      const glyph = group[index]!;
-      if (index > 0) {
-        const previous = group[index - 1]!;
-        const gap = glyph.x - (previous.x + previous.width);
-        if (gap > Math.max(1.5, glyph.fontSize * 0.18)) text += ' ';
-      }
-      text += glyph.text.replace(/[\u00B9\u00B2\u00B3\u2070-\u2079]/g, '');
+function lineFromGlyphs(page: RawPage, group: Glyph[]): Line | null {
+  if (!group.length) return null;
+  const glyphs = [...group].sort((a, b) => a.x - b.x);
+  let text = '';
+  for (let index = 0; index < glyphs.length; index += 1) {
+    const glyph = glyphs[index]!;
+    if (index > 0) {
+      const previous = glyphs[index - 1]!;
+      const gap = glyph.x - (previous.x + previous.width);
+      if (gap > Math.max(1.5, glyph.fontSize * 0.18)) text += ' ';
     }
-    text = text.replace(/[ \t]+/g, ' ').trim();
-    if (!text) continue;
-    const first = group[0]!;
-    const last = group[group.length - 1]!;
-    const fontSize = median(group.map((glyph) => glyph.fontSize)) || first.fontSize;
-    const fontName = group.map((glyph) => glyph.fontName).join(' ');
-    lines.push({
-      text,
-      page: page.pageNumber,
-      y: Math.min(...group.map((glyph) => glyph.y)),
-      yNorm: page.height > 0 ? Math.min(...group.map((glyph) => glyph.y)) / page.height : 0,
-      x: first.x,
-      width: last.x + last.width - first.x,
-      fontSize,
-      fontName,
-      bold: group.some((glyph) => isBoldFont(glyph.fontName)),
-      height: Math.max(...group.map((glyph) => glyph.height || glyph.fontSize || fontSize)),
-      pageWidth: page.width,
-      pageHeight: page.height,
+    text += glyph.text.replace(/[\u00B9\u00B2\u00B3\u2070-\u2079]/g, '');
+  }
+  text = text.replace(/[ \t]+/g, ' ').trim();
+  if (!text) return null;
+  const first = glyphs[0]!;
+  const last = glyphs[glyphs.length - 1]!;
+  const fontSize = median(glyphs.map((glyph) => glyph.fontSize)) || first.fontSize;
+  const y = Math.min(...glyphs.map((glyph) => glyph.y));
+  return {
+    text,
+    page: page.pageNumber,
+    y,
+    yNorm: page.height > 0 ? y / page.height : 0,
+    x: first.x,
+    width: last.x + last.width - first.x,
+    fontSize,
+    fontName: glyphs.map((glyph) => glyph.fontName).join(' '),
+    bold: glyphs.some((glyph) => isBoldFont(glyph.fontName)),
+    height: Math.max(...glyphs.map((glyph) => glyph.height || glyph.fontSize || fontSize)),
+    pageWidth: page.width,
+    pageHeight: page.height,
+  };
+}
+
+function columnGutter(page: RawPage, glyphs: Glyph[]): number | null {
+  const body = glyphs.filter((glyph) => {
+    const y = page.height > 0 ? glyph.y / page.height : 0;
+    return y > 0.05 && y < 0.95;
+  });
+  if (page.width < 240 || body.length < 4) return null;
+  const bins = 48;
+  const counts = new Array<number>(bins).fill(0);
+  for (const glyph of body) {
+    const center = glyph.x + glyph.width / 2;
+    const bin = Math.max(0, Math.min(bins - 1, Math.floor((center / page.width) * bins)));
+    counts[bin] = (counts[bin] ?? 0) + 1;
+  }
+  const startBin = Math.floor(bins * 0.3);
+  const endBin = Math.floor(bins * 0.7);
+  let bestStart = -1;
+  let bestLength = 0;
+  let run = 0;
+  let runStart = startBin;
+  for (let index = startBin; index <= endBin; index += 1) {
+    if ((counts[index] ?? 0) === 0) {
+      if (run === 0) runStart = index;
+      run += 1;
+      if (run > bestLength) {
+        bestLength = run;
+        bestStart = runStart;
+      }
+    } else run = 0;
+  }
+  if (bestStart < 0) return null;
+  const gapWidth = (bestLength / bins) * page.width;
+  if (gapWidth < page.width * 0.08) return null;
+  const gutter = ((bestStart + bestLength / 2) / bins) * page.width;
+  const left = body.filter((glyph) => glyph.x + glyph.width / 2 < gutter).length;
+  const right = body.filter((glyph) => glyph.x + glyph.width / 2 >= gutter).length;
+  if (left < 2 || right < 2) return null;
+  return gutter;
+}
+
+function overlapsGutter(glyphs: Glyph[], gutter: number, pageWidth: number): boolean {
+  const margin = Math.max(4, pageWidth * 0.015);
+  return glyphs.some((glyph) => glyph.x < gutter + margin && glyph.x + glyph.width > gutter - margin);
+}
+
+export function linesFromPage(page: RawPage): Line[] {
+  const glyphs = dropMarkers(page.glyphs);
+  const bands = bandGlyphs(glyphs);
+  const gutter = columnGutter(page, glyphs);
+  if (gutter == null) {
+    return bands.flatMap((band) => {
+      const line = lineFromGlyphs(page, band);
+      return line ? [line] : [];
     });
   }
-  return lines;
+  const header: Line[] = [];
+  const footer: Line[] = [];
+  type Segment = { full: Line | null; left: Line[]; right: Line[] };
+  const segments: Segment[] = [];
+  let current: Segment = { full: null, left: [], right: [] };
+  const pushCurrent = () => {
+    if (current.full || current.left.length || current.right.length) segments.push(current);
+    current = { full: null, left: [], right: [] };
+  };
+  for (const band of bands) {
+    const y = page.height > 0 ? Math.min(...band.map((glyph) => glyph.y)) / page.height : 0;
+    if (y <= 0.055 || y >= 0.94) {
+      const line = lineFromGlyphs(page, band);
+      if (!line) continue;
+      if (y <= 0.1) header.push(line);
+      else footer.push(line);
+      continue;
+    }
+    if (overlapsGutter(band, gutter, page.width)) {
+      const line = lineFromGlyphs(page, band);
+      if (!line) continue;
+      pushCurrent();
+      segments.push({ full: line, left: [], right: [] });
+      continue;
+    }
+    const left = lineFromGlyphs(
+      page,
+      band.filter((glyph) => glyph.x + glyph.width / 2 < gutter),
+    );
+    const right = lineFromGlyphs(
+      page,
+      band.filter((glyph) => glyph.x + glyph.width / 2 >= gutter),
+    );
+    if (left) current.left.push(left);
+    if (right) current.right.push(right);
+  }
+  pushCurrent();
+  const ordered = [...header];
+  for (const segment of segments) {
+    if (segment.full) ordered.push(segment.full);
+    ordered.push(...segment.left, ...segment.right);
+  }
+  ordered.push(...footer);
+  return ordered;
 }
 
 function zoneOf(line: Line): 'header' | 'footer' | 'body' {
@@ -323,11 +420,9 @@ export function stripReferences(paragraphs: Paragraph[]): Paragraph[] {
     return REF_HEAD.test(text) && (paragraph.kind === 'heading' || text.length < 48);
   });
   if (start < 0) return paragraphs;
-  const end = paragraphs.findIndex(
-    (paragraph, index) => index > start && paragraph.kind === 'heading' && AFTER_REF.test(paragraph.text.trim()),
-  );
-  if (end < 0) return paragraphs.slice(0, start);
-  return [...paragraphs.slice(0, start), ...paragraphs.slice(end)];
+  const next = paragraphs.findIndex((paragraph, index) => index > start && paragraph.kind === 'heading');
+  if (next < 0) return paragraphs.slice(0, start);
+  return [...paragraphs.slice(0, start), ...paragraphs.slice(next)];
 }
 
 export function cleanPages(pages: RawPage[]): Paragraph[] {

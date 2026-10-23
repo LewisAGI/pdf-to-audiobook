@@ -149,6 +149,27 @@ export function audioKey(chapterId: string, voice: string, mode: 'full' | 'summa
   return `${chapterId}:${voice}:${mode}`;
 }
 
+export class StorageQuotaError extends Error {
+  constructor() {
+    super('Not enough storage');
+    this.name = 'StorageQuotaError';
+  }
+}
+
+function isQuotaError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('name' in error)) return false;
+  const name = String(error.name);
+  return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || name === 'StorageQuotaError';
+}
+
+async function ensureRoom(bytes: number): Promise<void> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return;
+  const estimate = await navigator.storage.estimate();
+  const quota = estimate.quota ?? 0;
+  const usage = estimate.usage ?? 0;
+  if (quota > 0 && usage + bytes > quota) throw new StorageQuotaError();
+}
+
 async function opfsFile(bookId: string, name: string, create: boolean): Promise<FileSystemFileHandle | null> {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) return null;
   const root = await navigator.storage.getDirectory();
@@ -159,6 +180,8 @@ async function opfsFile(bookId: string, name: string, create: boolean): Promise<
 }
 
 export async function writeAudioBytes(bookId: string, key: string, bytes: Uint8Array): Promise<void> {
+  await ensureRoom(bytes.byteLength);
+  let quota = false;
   try {
     const handle = await opfsFile(bookId, `${encodeURIComponent(key)}.wav`, true);
     if (handle) {
@@ -167,10 +190,15 @@ export async function writeAudioBytes(bookId: string, key: string, bytes: Uint8A
       await writable.close();
       return;
     }
-  } catch {
-    /* IndexedDB holds the bytes when OPFS is unavailable. */
+  } catch (error) {
+    if (isQuotaError(error)) quota = true;
   }
-  await transaction('blobs', 'readwrite', (store) => store.put({ key: `${bookId}:${key}`, bytes }));
+  try {
+    await transaction('blobs', 'readwrite', (store) => store.put({ key: `${bookId}:${key}`, bytes }));
+  } catch (error) {
+    if (quota || isQuotaError(error)) throw new StorageQuotaError();
+    throw error;
+  }
 }
 
 export async function readAudioBytes(bookId: string, key: string): Promise<Uint8Array | null> {

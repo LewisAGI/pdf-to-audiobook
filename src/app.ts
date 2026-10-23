@@ -13,7 +13,7 @@ import {
 } from './lib/chapters';
 import { formatClock, sanitizeResume } from './lib/resume';
 import { summarizeExtractive } from './lib/summary';
-import { readLlmKey, summarizeWithLlm, writeLlmKey } from './lib/llm';
+import { endpointOrigin, normalizeEndpoint, readLlmKey, summarizeWithLlm, writeLlmKey } from './lib/llm';
 import { recognizeGlyphs } from './lib/ocr';
 import { parsePdf } from './lib/pdf';
 import {
@@ -33,12 +33,14 @@ import {
   savePosition,
   savePreferences,
   storageUsage,
+  StorageQuotaError,
   writeSourcePdf,
   type AudioRecord,
   type BookRecord,
   type Preferences,
   type StoredChapter,
 } from './lib/storage';
+import { encodeWav } from './lib/audio';
 import { SpeechEngine, stubRequested, webSpeechSupported } from './lib/tts';
 import { exportM4b, exportMp3Zip } from './lib/export';
 import { escapeHtml, iconButton, icons, installTooltips } from './ui';
@@ -56,7 +58,7 @@ const VOICES = [
 
 type Sheet =
   | null
-  | { name: 'add' | 'paste' | 'chapters' | 'speed' | 'sleep' | 'voice' | 'more' | 'summary' | 'storage' | 'export' | 'delete' }
+  | { name: 'add' | 'paste' | 'chapters' | 'speed' | 'sleep' | 'voice' | 'more' | 'summary' | 'storage' | 'export' | 'delete' | 'about' }
   | { name: 'chapter' | 'rename' | 'split'; index: number };
 
 type Busy = { label: string; ratio: number } | null;
@@ -85,6 +87,15 @@ export class App {
   private sleepClock = 0;
   private coverUrl = '';
   private generating = false;
+  private playToken = 0;
+  private priming = false;
+  private playbackArmed = false;
+  private silenceUrl = '';
+  private pasteDraft = '';
+  private renameDraft = '';
+  private endpointDraft = '';
+  private modelDraft = '';
+  private keyDraft = '';
   private fileInput: HTMLInputElement;
 
   constructor(
@@ -102,8 +113,12 @@ export class App {
     this.fileInput.addEventListener('change', () => void this.onFile());
     this.audio.addEventListener('timeupdate', () => this.onTime());
     this.audio.addEventListener('ended', () => void this.onEnded());
-    this.audio.addEventListener('play', () => this.render());
-    this.audio.addEventListener('pause', () => this.render());
+    this.audio.addEventListener('play', () => {
+      if (!this.priming) this.render();
+    });
+    this.audio.addEventListener('pause', () => {
+      if (!this.priming) this.render();
+    });
     window.addEventListener('keydown', (event) => {
       if (event.key !== ' ' || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       event.preventDefault();
@@ -188,10 +203,10 @@ export class App {
       chapter?.mode === 'summary'
         ? `<p class="notice">${chapter.summaryKind === 'llm' ? 'AI-generated summary' : 'Automatic summary'}</p>`
         : '';
-    const playing = !this.audio.paused && !this.audio.ended;
+    const playing = !this.priming && !this.audio.paused && !this.audio.ended;
     const playIcon = this.generating ? `<span class="stat">${Math.round((this.busy?.ratio ?? 0) * 100)}</span>` : playing ? icons.pause : icons.play;
     const playLabel = playing ? 'Pause' : 'Play';
-    return `<main class="shell">
+    return `<main class="shell" data-engine="${this.prefs.engine}" data-chapter="${escapeHtml(chapter?.id ?? '')}">
       <header class="top">
         ${iconButton('library', 'Library', icons.back)}
         <div class="top-actions">${iconButton('more', 'More', icons.more)}</div>
@@ -261,6 +276,7 @@ export class App {
       storage: 'Storage',
       export: 'Export',
       delete: this.book?.title ?? 'Delete',
+      about: 'About',
     };
     return titles[this.sheet.name] ?? '';
   }
@@ -271,7 +287,7 @@ export class App {
       return `<div class="icon-col">${iconButton('pick-pdf', 'Add PDF', icons.pdf)}${iconButton('paste', 'Paste text', icons.paste)}</div>`;
     }
     if (this.sheet.name === 'paste') {
-      return `<textarea id="paste-text" aria-label="Article text"></textarea>${iconButton('save-paste', 'Save', icons.check)}`;
+      return `<textarea id="paste-text" aria-label="Article text">${escapeHtml(this.pasteDraft)}</textarea>${iconButton('save-paste', 'Save', icons.check)}`;
     }
     if (this.sheet.name === 'chapters') {
       return this.chapters
@@ -298,7 +314,7 @@ export class App {
     }
     if (this.sheet.name === 'rename') {
       const chapter = this.chapters[this.sheet.index];
-      return `<input class="field" id="rename-input" aria-label="Chapter title" value="${escapeHtml(chapter?.title ?? '')}" />${iconButton('save-rename', 'Save', icons.check, `data-index="${this.sheet.index}"`)}`;
+      return `<input class="field" id="rename-input" aria-label="Chapter title" value="${escapeHtml(this.renameDraft || chapter?.title || '')}" />${iconButton('save-rename', 'Save', icons.check, `data-index="${this.sheet.index}"`)}`;
     }
     if (this.sheet.name === 'split') {
       const chapter = this.chapters[this.sheet.index];
@@ -334,6 +350,7 @@ export class App {
         ${iconButton('voice', 'Voice', icons.voice)}
         ${iconButton('summary', 'Summary', icons.summary)}
         ${iconButton('storage', 'Storage', icons.storage)}
+        ${iconButton('about', 'About', icons.about)}
         ${iconButton('delete', 'Delete', icons.trash)}
       </div>`;
     }
@@ -341,15 +358,17 @@ export class App {
       return `<div class="icon-col">${iconButton('export-mp3', 'Export MP3', icons.download)}${iconButton('export-m4b', 'Export M4B', icons.book)}</div>`;
     }
     if (this.sheet.name === 'summary') {
-      const key = readLlmKey(localStorage);
       return `<div class="icon-col">
         ${iconButton('engine-extractive', 'Automatic summary', icons.spark, this.prefs.summaryEngine === 'extractive' ? 'aria-pressed="true"' : '')}
         ${iconButton('engine-llm', 'API summary', icons.summary, this.prefs.summaryEngine === 'llm' ? 'aria-pressed="true"' : '')}
       </div>
-      <input class="field" id="llm-endpoint" aria-label="Endpoint" value="${escapeHtml(this.prefs.llmEndpoint)}" />
-      <input class="field" id="llm-model" aria-label="Model" value="${escapeHtml(this.prefs.llmModel)}" />
-      <input class="field" id="llm-key" type="password" aria-label="API key" autocomplete="off" value="${escapeHtml(key)}" />
+      <input class="field" id="llm-endpoint" aria-label="Endpoint" value="${escapeHtml(this.endpointDraft)}" />
+      <input class="field" id="llm-model" aria-label="Model" value="${escapeHtml(this.modelDraft)}" />
+      <input class="field" id="llm-key" type="password" aria-label="API key" autocomplete="off" value="${escapeHtml(this.keyDraft)}" />
       ${iconButton('save-llm', 'Save', icons.check)}`;
+    }
+    if (this.sheet.name === 'about') {
+      return `<a class="icon-btn" href="/THIRD_PARTY_NOTICES" data-tip="Notices" aria-label="Third-party notices">${icons.book}</a>`;
     }
     if (this.sheet.name === 'storage') return `<div id="storage-slot" class="stat">…</div>`;
     if (this.sheet.name === 'delete') return iconButton('confirm-delete', 'Delete', icons.trash);
@@ -407,6 +426,7 @@ export class App {
     else if (action === 'export-mp3') await this.exportZip();
     else if (action === 'export-m4b') await this.exportBook();
     else if (action === 'summary') this.openSheet({ name: 'summary' });
+    else if (action === 'about') this.openSheet({ name: 'about' });
     else if (action === 'engine-extractive') await this.setSummaryEngine('extractive');
     else if (action === 'engine-llm') await this.setSummaryEngine('llm');
     else if (action === 'save-llm') await this.saveLlm();
@@ -441,6 +461,19 @@ export class App {
         void saveBook(this.book, this.chapters);
       }
     }
+    if (target.id === 'paste-text') this.pasteDraft = target.value;
+    if (target.id === 'rename-input') this.renameDraft = target.value;
+    if (target.id === 'llm-model') this.modelDraft = target.value;
+    if (target.id === 'llm-key') this.keyDraft = target.value;
+    if (target.id === 'llm-endpoint') {
+      const next = target.value;
+      if (endpointOrigin(next) !== endpointOrigin(this.endpointDraft)) {
+        this.keyDraft = readLlmKey(localStorage, next);
+        const key = this.root.querySelector<HTMLInputElement>('#llm-key');
+        if (key) key.value = this.keyDraft;
+      }
+      this.endpointDraft = next;
+    }
     if (target.id === 'seek') {
       const duration = this.audio.duration;
       if (Number.isFinite(duration) && duration > 0) {
@@ -464,6 +497,12 @@ export class App {
   }
 
   private openSheet(sheet: Sheet) {
+    if (sheet?.name === 'summary') {
+      this.endpointDraft = this.prefs.llmEndpoint;
+      this.modelDraft = this.prefs.llmModel;
+      this.keyDraft = readLlmKey(localStorage, this.prefs.llmEndpoint);
+    }
+    if (sheet?.name === 'rename') this.renameDraft = this.chapters[sheet.index]?.title ?? '';
     this.sheet = sheet;
     this.render();
     if (sheet?.name === 'storage') void this.fillStorage();
@@ -528,7 +567,7 @@ export class App {
 
   private async savePaste() {
     const field = this.root.querySelector<HTMLTextAreaElement>('#paste-text');
-    const text = field?.value ?? '';
+    const text = field?.value || this.pasteDraft;
     if (/^https?:\/\/\S+$/i.test(text.trim())) {
       field?.setAttribute('aria-invalid', 'true');
       this.showToast('No article text');
@@ -539,6 +578,7 @@ export class App {
       field?.setAttribute('aria-invalid', 'true');
       return;
     }
+    this.pasteDraft = '';
     const chapters = materialize(detectChapters(paragraphs, null));
     const book = this.makeBook(chapters[0]?.title || 'Pasted article', 'text');
     await saveBook(book, chapters);
@@ -569,7 +609,7 @@ export class App {
   }
 
   private async saveRename(index: number) {
-    const value = this.root.querySelector<HTMLInputElement>('#rename-input')?.value ?? '';
+    const value = this.root.querySelector<HTMLInputElement>('#rename-input')?.value || this.renameDraft;
     await this.edit((chapters) => renameChapter(chapters, index, value));
   }
 
@@ -591,7 +631,7 @@ export class App {
 
   private async fillSummary(chapter: StoredChapter) {
     if (this.prefs.summaryEngine === 'llm') {
-      const apiKey = readLlmKey(localStorage);
+      const apiKey = readLlmKey(localStorage, this.prefs.llmEndpoint);
       if (!apiKey) {
         chapter.summary = summarizeExtractive(chapter.text);
         chapter.summaryKind = 'extractive';
@@ -633,20 +673,27 @@ export class App {
       if (next >= 0) return this.playChapter(next, 0);
       return;
     }
+    const token = ++this.playToken;
+    this.speech.cancel();
+    if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
     this.index = index;
     this.shownTime = time;
     if (this.prefs.engine === 'webspeech' && !stubRequested()) {
       this.speak(chapter, time);
       return;
     }
+    this.armPlayback();
     try {
       const wav = await this.ensureAudio(chapter);
+      if (token !== this.playToken) return;
       if (!wav) return;
       if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
       const copy = new Uint8Array(wav.byteLength);
       copy.set(wav);
       const url = URL.createObjectURL(new Blob([copy], { type: 'audio/wav' }));
       this.objectUrl = url;
+      this.priming = false;
+      this.audio.loop = false;
       this.audio.playbackRate = clampRate(this.prefs.rate);
       await new Promise<void>((resolve) => {
         const done = () => {
@@ -655,7 +702,7 @@ export class App {
         };
         this.audio.addEventListener('loadedmetadata', done);
         this.audio.src = url;
-        if (this.audio.readyState >= 1) done();
+        if (this.audio.currentSrc === url && this.audio.readyState >= 1) done();
       });
       const point = sanitizeResume({ chapterIndex: index, time }, this.chapters, this.audio.duration);
       this.audio.currentTime = point.time;
@@ -663,6 +710,24 @@ export class App {
       await this.audio.play();
       this.render();
     } catch (error) {
+      if (token !== this.playToken || isAbortError(error)) {
+        if (token === this.playToken) {
+          this.generating = false;
+          this.busy = null;
+          this.render();
+        }
+        return;
+      }
+      this.generating = false;
+      this.busy = null;
+      if (isStorageError(error)) {
+        this.showToast('Not enough storage');
+        return;
+      }
+      if (error instanceof DOMException && error.name === 'NotAllowedError') {
+        this.render();
+        return;
+      }
       if (webSpeechSupported()) {
         this.prefs.engine = 'webspeech';
         this.showToast('Neural voice unavailable');
@@ -727,17 +792,43 @@ export class App {
       return readAudioBytes(this.book.id, key);
     }
     this.generating = true;
-    this.setBusy('Voice', existing ? existing.sentencesDone / Math.max(1, existing.sentenceCount) : 0.02);
-    const prior = existing ? await loadAudioPcm(existing) : null;
+    const resumeFrom = existing && !existing.complete ? existing.sentencesDone : 0;
+    const prior = resumeFrom > 0 && existing ? await loadAudioPcm(existing) : null;
+    const startFrom = prior ? resumeFrom : 0;
+    this.setBusy('Voice', existing && existing.sentenceCount ? startFrom / existing.sentenceCount : 0.02);
     const text = spokenText(chapter);
+    let latest = prior?.samples ?? new Float32Array();
+    let latestRate = prior?.sampleRate ?? 24000;
+    let sentenceTotal = Math.max(1, existing?.sentenceCount ?? 1);
     const audio = await this.speech.synthesize({
       text,
       voice: this.prefs.voice,
       speed: 1,
-      resumeFrom: existing?.sentencesDone ?? 0,
+      resumeFrom: startFrom,
       prior: prior?.samples,
       priorRate: prior?.sampleRate,
       onProgress: (progress) => this.setBusy(progress.phase === 'model' ? 'Voice' : 'Reading', progress.ratio || 0.04),
+      onSentence: async (update) => {
+        latest = update.samples;
+        latestRate = update.sampleRate;
+        sentenceTotal = update.total;
+        await saveAudio(
+          {
+            key,
+            bookId: this.book!.id,
+            chapterId: chapter.id,
+            voice: this.prefs.voice,
+            mode: chapter.mode,
+            sampleRate: latestRate,
+            sentencesDone: update.index + 1,
+            sentenceCount: update.total,
+            complete: false,
+            duration: latest.length / latestRate,
+            bytes: 0,
+          },
+          latest,
+        );
+      },
     });
     const record: AudioRecord = {
       key,
@@ -746,8 +837,8 @@ export class App {
       voice: this.prefs.voice,
       mode: chapter.mode,
       sampleRate: audio.sampleRate,
-      sentencesDone: 1,
-      sentenceCount: 1,
+      sentencesDone: sentenceTotal,
+      sentenceCount: sentenceTotal,
       complete: true,
       duration: audio.samples.length / audio.sampleRate,
       bytes: 0,
@@ -781,6 +872,9 @@ export class App {
   }
 
   private async onEnded() {
+    if (this.priming) return;
+    const duration = this.audio.duration;
+    if (!Number.isFinite(duration) || duration < 1 || this.audio.currentTime + 0.5 < duration) return;
     if (this.sleep === 'chapter') {
       this.sleep = 'off';
       this.audio.pause();
@@ -791,6 +885,7 @@ export class App {
   }
 
   private onTime() {
+    if (this.priming) return;
     this.shownTime = this.audio.currentTime;
     this.paintTime();
     if (Math.floor(this.audio.currentTime) % 5 === 0) void this.persistPosition();
@@ -854,9 +949,18 @@ export class App {
   }
 
   private async saveLlm() {
-    this.prefs.llmEndpoint = this.root.querySelector<HTMLInputElement>('#llm-endpoint')?.value.trim() || this.prefs.llmEndpoint;
-    this.prefs.llmModel = this.root.querySelector<HTMLInputElement>('#llm-model')?.value.trim() || this.prefs.llmModel;
-    writeLlmKey(localStorage, this.root.querySelector<HTMLInputElement>('#llm-key')?.value ?? '');
+    const endpointField = this.root.querySelector<HTMLInputElement>('#llm-endpoint');
+    const modelField = this.root.querySelector<HTMLInputElement>('#llm-model');
+    const keyField = this.root.querySelector<HTMLInputElement>('#llm-key');
+    const endpoint = normalizeEndpoint(endpointField?.value ?? this.endpointDraft);
+    const model = (modelField?.value ?? this.modelDraft).trim();
+    const key = keyField?.value ?? this.keyDraft;
+    this.prefs.llmEndpoint = endpoint || this.prefs.llmEndpoint;
+    this.prefs.llmModel = model || this.prefs.llmModel;
+    this.endpointDraft = this.prefs.llmEndpoint;
+    this.modelDraft = this.prefs.llmModel;
+    this.keyDraft = key;
+    writeLlmKey(localStorage, this.prefs.llmEndpoint, key);
     await savePreferences(this.prefs);
     this.closeSheet();
   }
@@ -894,22 +998,31 @@ export class App {
       this.showToast("Web Speech audio can't be exported");
       return;
     }
-    const selected = this.chapters.filter((chapter) => !chapter.skipped);
-    const payload = [];
-    for (const chapter of selected) {
-      const wav = await this.ensureAudio(chapter);
-      if (!wav) continue;
-      const { decodeWav } = await import('./lib/audio');
-      const decoded = decodeWav(wav);
-      payload.push({ title: chapter.title, samples: decoded.samples, sampleRate: decoded.sampleRate });
+    try {
+      const selected = this.chapters.filter((chapter) => !chapter.skipped);
+      const payload = [];
+      for (const chapter of selected) {
+        const wav = await this.ensureAudio(chapter);
+        if (!wav) continue;
+        const { decodeWav } = await import('./lib/audio');
+        const decoded = decodeWav(wav);
+        payload.push({ title: chapter.title, samples: decoded.samples, sampleRate: decoded.sampleRate });
+      }
+      if (!payload.length) return;
+      this.setBusy('Export', 0.4);
+      const file = await build(payload);
+      this.busy = null;
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(file.blob);
+      link.download = file.filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+      this.render();
+    } catch (error) {
+      this.generating = false;
+      this.busy = null;
+      this.showToast(error instanceof Error && error.message ? error.message : 'Export failed');
     }
-    if (!payload.length) return;
-    const file = await build(payload);
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(file.blob);
-    link.download = file.filename;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 4000);
   }
 
   private async fillStorage() {
@@ -919,6 +1032,25 @@ export class App {
     const ratio = usage.quota > 0 ? Math.min(1, usage.used / usage.quota) : 0;
     slot.innerHTML = `<div class="meter" role="meter" aria-label="Storage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(ratio * 100)}"><span></span></div><p class="stat">${formatBytes(usage.library)} in this library</p><p class="stat">${formatBytes(usage.used)} used</p>`;
     slot.querySelector('span')?.style.setProperty('--p', ratio.toFixed(3));
+  }
+
+  private silenceSrc(): string {
+    if (this.silenceUrl) return this.silenceUrl;
+    const wav = encodeWav(new Float32Array(800), 8000);
+    this.silenceUrl = URL.createObjectURL(new Blob([new Uint8Array(wav)], { type: 'audio/wav' }));
+    return this.silenceUrl;
+  }
+
+  private armPlayback() {
+    if (this.playbackArmed) return;
+    this.playbackArmed = true;
+    this.priming = true;
+    this.audio.loop = true;
+    this.audio.src = this.silenceSrc();
+    void this.audio.play().catch(() => {
+      this.priming = false;
+      this.playbackArmed = false;
+    });
   }
 
   private setBusy(label: string, ratio: number) {
@@ -1004,6 +1136,14 @@ export class App {
     this.coverUrl = canvas.toDataURL('image/png');
     return this.coverUrl;
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function isStorageError(error: unknown): boolean {
+  return error instanceof StorageQuotaError || (error instanceof Error && error.name === 'StorageQuotaError');
 }
 
 function clampRate(rate: number): number {

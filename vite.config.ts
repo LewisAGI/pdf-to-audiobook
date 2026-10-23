@@ -27,6 +27,21 @@ function sameOriginStyles(): Plugin {
   };
 }
 
+function ffmpegWorkerAssets(): Plugin {
+  return {
+    name: 'ffmpeg-worker-assets',
+    generateBundle() {
+      for (const name of ['const.js', 'errors.js']) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `assets/${name}`,
+          source: readFileSync(new URL(`./node_modules/@ffmpeg/ffmpeg/dist/esm/${name}`, import.meta.url)),
+        });
+      }
+    },
+  };
+}
+
 function securityHeaders(): Plugin {
   const headers: Record<string, string> = {};
   for (const line of readFileSync(new URL('./public/_headers', import.meta.url), 'utf8').split('\n')) {
@@ -47,6 +62,7 @@ function securityHeaders(): Plugin {
 export default defineConfig({
   plugins: [
     bundleLamejs(),
+    ffmpegWorkerAssets(),
     sameOriginStyles(),
     securityHeaders(),
     VitePWA({
@@ -68,21 +84,16 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,mjs,traineddata}'],
-        globIgnores: ['**/onnx/**', '**/pdfjs/**'],
+        globPatterns: ['**/*.{js,css,html,svg,png,mjs,traineddata,wasm,ttf,bcmap,pfb}'],
+        globIgnores: ['**/onnx/**/*.wasm', '**/ort-wasm*.wasm'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         navigateFallback: 'index.html',
         navigateFallbackDenylist: [/^\/pdfjs\//, /^\/tesseract\//, /^\/tessdata\//, /^\/onnx\//],
         runtimeCaching: [
           {
-            urlPattern: /\/onnx\/.+\.wasm$/,
+            urlPattern: /\/onnx\/.+\.(?:wasm|mjs)$/,
             handler: 'CacheFirst',
-            options: { cacheName: 'onnx-wasm', expiration: { maxEntries: 4 } },
-          },
-          {
-            urlPattern: /^https:\/\/huggingface\.co\/.*/i,
-            handler: 'CacheFirst',
-            options: { cacheName: 'kokoro-model', expiration: { maxEntries: 32 } },
+            options: { cacheName: 'onnx-runtime', expiration: { maxEntries: 8 } },
           },
           {
             urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/@ffmpeg\/.*/i,

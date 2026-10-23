@@ -5,12 +5,13 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "postinstall": "node scripts/copy-assets.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:e2e": "tsc --noEmit && vite build --mode test",
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",

@@ -221,6 +221,7 @@ export function mergeWithNext(chapters: Chapter[], index: number): Chapter[] {
   if (!current || !next) return chapters;
   const merged: Chapter = {
     ...current,
+    id: createId(),
     text: [current.text, next.text].filter(Boolean).join('\n\n'),
     summary: '',
     summaryKind: '',
@@ -245,7 +246,7 @@ export function splitChapter(chapters: Chapter[], index: number, atParagraph: nu
   if (atParagraph <= 0 || atParagraph >= parts.length) return chapters;
   const left = parts.slice(0, atParagraph).join('\n\n');
   const right = parts.slice(atParagraph).join('\n\n');
-  const head: Chapter = { ...chapter, text: left, summary: '', summaryKind: '', mode: 'full' };
+  const head: Chapter = { ...chapter, id: createId(), text: left, summary: '', summaryKind: '', mode: 'full' };
   const tail: Chapter = {
     ...chapter,
     id: createId(),

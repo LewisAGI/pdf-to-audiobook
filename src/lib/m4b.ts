@@ -124,15 +124,102 @@ function esdsBox(config: Uint8Array, bitrate: number): Uint8Array {
   return fullbox('esds', 0, 0, es);
 }
 
+export function utf8Clip(text: string, maxBytes: number): Uint8Array {
+  const bytes = textEncoder.encode(text);
+  if (bytes.byteLength <= maxBytes) return bytes;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return bytes.slice(0, end);
+}
+
 export function buildChpl(chapters: M4bChapter[]): Uint8Array {
   const limited = chapters.slice(0, 255);
   const body: Uint8Array[] = [u8(1), new Uint8Array([0, 0, 0]), u32(0), u8(limited.length)];
   for (const chapter of limited) {
-    const title = textEncoder.encode(chapter.title).slice(0, 255);
+    const title = utf8Clip(chapter.title, 255);
     const ticks = Math.max(0, Math.round(chapter.startMs * 10000));
     body.push(u64(ticks), u8(title.length), title);
   }
   return box('chpl', ...body);
+}
+
+const TEXT_SAMPLE_ENTRY = Uint8Array.from([
+  0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0d, 0x66,
+  0x74, 0x61, 0x62, 0, 1, 0, 1, 0,
+]);
+
+const ENCD = concat([u32(12), fourcc('encd'), new Uint8Array([0x00, 0x00, 0x01, 0x00])]);
+
+function textSample(title: string): Uint8Array {
+  const text = utf8Clip(title, 65535);
+  return concat([u16(text.length), text, ENCD]);
+}
+
+function chapterSpans(chapters: M4bChapter[], durationMs: number): { title: string; durationMs: number }[] {
+  const list = chapters.length ? chapters : [{ title: 'Chapter 1', startMs: 0 }];
+  const safeDuration = Math.max(1, durationMs);
+  return list.map((chapter, index) => {
+    const start = Math.max(0, Math.min(safeDuration, Math.round(chapter.startMs)));
+    const nextStart = index + 1 < list.length ? Math.round(list[index + 1]!.startMs) : safeDuration;
+    const end = Math.max(start + 1, Math.min(safeDuration, Math.max(nextStart, start + 1)));
+    return { title: chapter.title || `Chapter ${index + 1}`, durationMs: Math.max(1, end - start) };
+  });
+}
+
+function gmhdBox(): Uint8Array {
+  const gmin = concat([
+    u32(0x18),
+    fourcc('gmin'),
+    u32(0),
+    u16(0x40),
+    u16(0x8000),
+    u16(0x8000),
+    u16(0x8000),
+    u16(0),
+    u16(0),
+  ]);
+  const text = Uint8Array.from([
+    0x00, 0x00, 0x00, 0x2c, 0x74, 0x65, 0x78, 0x74, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  ]);
+  return box('gmhd', gmin, text);
+}
+
+function chapterTrack(spans: { title: string; durationMs: number }[], now: number, textOffset: number): { trak: Uint8Array; samples: Uint8Array } {
+  const samples = spans.map((span) => textSample(span.title));
+  const payload = concat(samples);
+  const duration = spans.reduce((sum, span) => sum + span.durationMs, 0);
+  const stsd = fullbox('stsd', 0, 0, u32(1), box('text', TEXT_SAMPLE_ENTRY));
+  const stts = fullbox('stts', 0, 0, u32(spans.length), ...spans.flatMap((span) => [u32(1), u32(span.durationMs)]));
+  const stsc = fullbox('stsc', 0, 0, u32(1), u32(1), u32(spans.length), u32(1));
+  const stsz = fullbox('stsz', 0, 0, u32(0), u32(spans.length), ...samples.map((sample) => u32(sample.length)));
+  const stco = fullbox('stco', 0, 0, u32(1), u32(textOffset));
+  const stbl = box('stbl', stsd, stts, stsc, stsz, stco);
+  const dinf = box('dinf', fullbox('dref', 0, 0, u32(1), fullbox('url ', 0, 1)));
+  const minf = box('minf', gmhdBox(), dinf, stbl);
+  const mdhd = fullbox('mdhd', 0, 0, u32(now), u32(now), u32(1000), u32(duration), u16(0x55c4), u16(0));
+  const hdlr = fullbox('hdlr', 0, 0, u32(0), fourcc('text'), zeros(12), textEncoder.encode('TextHandler\0'));
+  const mdia = box('mdia', mdhd, hdlr, minf);
+  const tkhd = fullbox(
+    'tkhd',
+    0,
+    0x7,
+    u32(now),
+    u32(now),
+    u32(2),
+    u32(0),
+    u32(duration),
+    zeros(8),
+    u16(0),
+    u16(0),
+    u16(0),
+    u16(0),
+    matrix(),
+    u32(0),
+    u32(0),
+  );
+  return { trak: box('trak', tkhd, mdia), samples: payload };
 }
 
 export function buildM4b(input: M4bInput): Uint8Array {
@@ -146,9 +233,12 @@ export function buildM4b(input: M4bInput): Uint8Array {
   const bitrate = 64000;
 
   const ftyp = box('ftyp', fourcc('M4B '), u32(0), fourcc('M4B '), fourcc('isom'), fourcc('iso2'), fourcc('mp41'));
-  const mdatPayload = concat(frames.map((frame) => frame.data));
-  const mdat = box('mdat', mdatPayload);
+  const audioPayload = concat(frames.map((frame) => frame.data));
   const mdatDataOffset = ftyp.length + 8;
+  const spans = chapterSpans(input.chapters, durationMs);
+  const textPayload = concat(spans.map((span) => textSample(span.title)));
+  const mdat = box('mdat', audioPayload, textPayload);
+  const textOffset = mdatDataOffset + audioPayload.length;
 
   const sameDelta = frames.every((frame) => frame.durationSamples === frames[0]!.durationSamples);
   const stts = sameDelta
@@ -222,7 +312,9 @@ export function buildM4b(input: M4bInput): Uint8Array {
     u32(0),
     u32(0),
   );
-  const trak = box('trak', tkhd, mdia);
+  const tref = box('tref', box('chap', u32(2)));
+  const trak = box('trak', tkhd, tref, mdia);
+  const chapters = chapterTrack(spans, now, textOffset);
   const mvhd = fullbox(
     'mvhd',
     0,
@@ -236,11 +328,11 @@ export function buildM4b(input: M4bInput): Uint8Array {
     zeros(10),
     matrix(),
     zeros(24),
-    u32(2),
+    u32(3),
   );
-  const chapters = input.chapters.length ? input.chapters : [{ title: 'Chapter 1', startMs: 0 }];
-  const udta = box('udta', buildChpl(chapters));
-  const moov = box('moov', mvhd, trak, udta);
+  const marked = input.chapters.length ? input.chapters : [{ title: 'Chapter 1', startMs: 0 }];
+  const udta = box('udta', buildChpl(marked));
+  const moov = box('moov', mvhd, trak, chapters.trak, udta);
   return concat([ftyp, mdat, moov]);
 }
 
@@ -251,7 +343,7 @@ export type Mp4Box = {
   header: number;
 };
 
-const CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'dinf', 'udta']);
+const CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'dinf', 'udta', 'tref']);
 
 export function walkBoxes(bytes: Uint8Array, start = 0, end = bytes.length): Mp4Box[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -281,6 +373,62 @@ export type ParsedChapter = {
   title: string;
   startMs: number;
 };
+
+export function chplTicks(bytes: Uint8Array, index: number): number {
+  const chpl = walkBoxes(bytes).find((entry) => entry.type === 'chpl');
+  if (!chpl) throw new Error('missing chpl');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = chpl.start + chpl.header + 9;
+  for (let cursor = 0; cursor <= index; cursor += 1) {
+    const high = view.getUint32(offset);
+    const low = view.getUint32(offset + 4);
+    const ticks = high * 2 ** 32 + low;
+    if (cursor === index) return ticks;
+    offset += 8;
+    const length = bytes[offset] ?? 0;
+    offset += 1 + length;
+  }
+  throw new Error('chapter missing');
+}
+
+export function readChapterTrack(bytes: Uint8Array): { title: string }[] {
+  const traks = walkBoxes(bytes).filter((entry) => entry.type === 'trak');
+  for (const trak of traks) {
+    const slice = bytes.subarray(trak.start, Math.min(bytes.length, trak.start + trak.size));
+    const inner = walkBoxes(slice);
+    const hdlr = inner.find((entry) => entry.type === 'hdlr');
+    if (!hdlr) continue;
+    const handlerAt = hdlr.start + hdlr.header + 8;
+    const handler = String.fromCharCode(
+      slice[handlerAt] ?? 0,
+      slice[handlerAt + 1] ?? 0,
+      slice[handlerAt + 2] ?? 0,
+      slice[handlerAt + 3] ?? 0,
+    );
+    if (handler !== 'text') continue;
+    const stsz = inner.find((entry) => entry.type === 'stsz');
+    const stco = inner.find((entry) => entry.type === 'stco');
+    if (!stsz || !stco) continue;
+    const view = new DataView(slice.buffer, slice.byteOffset, slice.byteLength);
+    const file = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const sampleSize = view.getUint32(stsz.start + stsz.header + 4);
+    const count = view.getUint32(stsz.start + stsz.header + 8);
+    const sizes: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      sizes.push(sampleSize || view.getUint32(stsz.start + stsz.header + 12 + index * 4));
+    }
+    let cursor = view.getUint32(stco.start + stco.header + 8);
+    const titles: { title: string }[] = [];
+    for (const size of sizes) {
+      if (cursor + 2 > bytes.length) break;
+      const length = file.getUint16(cursor);
+      titles.push({ title: textDecoder.decode(bytes.subarray(cursor + 2, cursor + 2 + Math.min(length, size))) });
+      cursor += size;
+    }
+    return titles;
+  }
+  return [];
+}
 
 export function readChpl(bytes: Uint8Array): ParsedChapter[] {
   const chpl = walkBoxes(bytes).find((entry) => entry.type === 'chpl');

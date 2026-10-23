@@ -37,6 +37,7 @@ export const icons = {
   book: svg('<path d="M5 5.5h6.2A2.3 2.3 0 0 1 13.5 7.8V19H7.3A2.3 2.3 0 0 0 5 21.3z"/><path d="M19 5.5h-6.2A2.3 2.3 0 0 0 10.5 7.8V19h6.2A2.3 2.3 0 0 1 19 21.3z"/>'),
   spark: svg('<path d="M12 3.5 13.6 9 19 10.5 13.6 12 12 17.5 10.4 12 5 10.5 10.4 9z"/>'),
   storage: svg('<path d="M5 7.5h14v9H5z"/><path d="M5 11.5h14"/><path d="M8 15h.01"/>'),
+  about: svg('<circle cx="12" cy="12" r="8"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
   summary: svg('<path d="M7 6h10M7 10h10M7 14h6"/>'),
 };
 
@@ -100,6 +101,7 @@ export function installTooltips(root: ParentNode) {
     }, 480);
     const clear = () => {
       window.clearTimeout(longTimer);
+      hideTip();
       target.removeEventListener('pointerup', clear);
       target.removeEventListener('pointercancel', clear);
       target.removeEventListener('pointerleave', clear);

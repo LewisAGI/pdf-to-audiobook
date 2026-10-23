@@ -27,6 +27,20 @@ function body(text: string, page = 1): Paragraph {
 }
 
 describe('chapter detection', () => {
+  it('prefers outline titles over different heading text', () => {
+    const paragraphs = [
+      { text: 'Body Heading', page: 1, y: 80, fontSize: 22, bold: true, kind: 'heading' as const },
+      { text: 'The river kept its name.', page: 1, y: 120, fontSize: 12, bold: false, kind: 'body' as const },
+      { text: 'Other Heading', page: 2, y: 80, fontSize: 22, bold: true, kind: 'heading' as const },
+      { text: 'They left at dusk.', page: 2, y: 120, fontSize: 12, bold: false, kind: 'body' as const },
+    ];
+    const chapters = detectChapters(paragraphs, [
+      { title: 'Outline Arrival', page: 1, y: null, level: 1 },
+      { title: 'Outline Departure', page: 2, y: null, level: 1 },
+    ]);
+    expect(chapters.map((chapter) => chapter.title)).toEqual(['Outline Arrival', 'Outline Departure']);
+  });
+
   it('uses a real PDF outline before headings', async () => {
     const { pdf, paragraphs } = await parsed('outline.pdf');
     expect(pdf.outline.map((item) => item.title)).toEqual(['Arrival', 'Departure']);
@@ -64,6 +78,21 @@ describe('chapter detection', () => {
     await pdf.destroy();
   });
 
+  it('keeps the chapter after a mid-book references heading', async () => {
+    const { pdf, paragraphs } = await parsed('references.pdf');
+    const chapters = detectChapters(paragraphs, pdf.outline);
+    expect(chapters.map((chapter) => chapter.title)).toEqual(['Opening', 'The Return']);
+    expect(chapters.map((chapter) => chapter.text).join('\n')).not.toContain('Smith');
+    await pdf.destroy();
+  });
+
+  it('reads two columns down the left side first', async () => {
+    const { pdf, paragraphs } = await parsed('columns.pdf');
+    const chapters = detectChapters(paragraphs, pdf.outline);
+    expect(chapters.map((chapter) => chapter.title)).toEqual(['LEFTMARK', 'LEFTEND', 'RIGHTMARK', 'RIGHTEND']);
+    await pdf.destroy();
+  });
+
   it('marks the scanned fixture as an OCR page', async () => {
     const data = new Uint8Array(await readFile(new URL('../fixtures/scanned.pdf', import.meta.url)));
     const pdf = await parsePdf(data, pdfAssets);
@@ -82,10 +111,21 @@ describe('chapter detection', () => {
     chapters = renameChapter(chapters, 0, 'Opening');
     expect(chapters[0]?.title).toBe('Opening');
     const before = chapters.length;
+    const left = chapters[0]!;
+    const right = chapters[1]!;
     chapters = mergeWithNext(chapters, 0);
     expect(chapters.length).toBe(before - 1);
+    expect(chapters[0]?.text).toContain(left.text.slice(0, 24));
+    expect(chapters[0]?.text).toContain(right.text.slice(0, 24));
+    expect(chapters[0]?.id).not.toBe(left.id);
+    expect(chapters[0]?.id).not.toBe(right.id);
+    const mergedId = chapters[0]!.id;
     chapters = splitChapter(chapters, 0, 1);
     expect(chapters.length).toBe(before);
+    expect(chapters[0]?.id).not.toBe(mergedId);
+    expect(chapters[1]?.id).not.toBe(mergedId);
+    expect(chapters[0]?.text.length).toBeGreaterThan(0);
+    expect(chapters[1]?.text.length).toBeGreaterThan(0);
     chapters = toggleSkip(chapters, 1);
     expect(chapters[1]?.skipped).toBe(true);
   });
