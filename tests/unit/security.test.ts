@@ -37,6 +37,7 @@ describe('response headers', () => {
     expect(lock.packages[''].license).toBe('GPL-3.0-or-later');
     const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
     expect(readme).toContain('GPL-3.0-or-later');
+    expect(readme).not.toMatch(/\bMIT\b/);
     const notices = readFileSync(new URL('../../public/THIRD_PARTY_NOTICES.txt', import.meta.url), 'utf8').split('\n');
     expect(notices[3]).toBe(
       'This application is licensed under GPL-3.0-or-later. Source: https://github.com/LewisAGI/pdf-to-audiobook. The components below keep their own licenses.',

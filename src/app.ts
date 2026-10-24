@@ -42,6 +42,13 @@ import {
   type StoredChapter,
 } from './lib/storage';
 import { encodeWav } from './lib/audio';
+import {
+  PLAYBACK_RETRY_MESSAGE,
+  PlaybackTimeoutError,
+  isPlaybackTimeout,
+  mediaHang,
+  mediaTimeoutMs,
+} from './lib/media-timeout';
 import { SpeechEngine, stubRequested, webSpeechSupported } from './lib/tts';
 import { exportM4b, exportMp3Zip } from './lib/export';
 import { escapeHtml, iconButton, icons, installTooltips } from './ui';
@@ -744,13 +751,19 @@ export class App {
       await this.startPlayback();
       this.render();
     } catch (error) {
-      if (token !== this.playToken || isAbortError(error)) {
-        if (token === this.playToken) {
-          this.generating = false;
-          this.busy = null;
-          this.priming = false;
-          this.render();
-        }
+      if (token !== this.playToken) return;
+      if (isPlaybackTimeout(error)) {
+        this.generating = false;
+        this.busy = null;
+        this.priming = false;
+        this.showToast(PLAYBACK_RETRY_MESSAGE);
+        return;
+      }
+      if (isAbortError(error)) {
+        this.generating = false;
+        this.busy = null;
+        this.priming = false;
+        this.render();
         return;
       }
       this.generating = false;
@@ -1120,9 +1133,10 @@ export class App {
 
   private loadSource(url: string): Promise<void> {
     const audio = this.audio;
+    const hang = mediaHang() === 'load';
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (error?: DOMException) => {
+      const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         audio.removeEventListener('loadedmetadata', onReady);
@@ -1134,15 +1148,16 @@ export class App {
         else resolve();
       };
       const onReady = () => {
+        if (hang) return;
         if (audio.readyState >= 1) finish();
       };
       const onError = () => {
         if (audio.readyState >= 1) finish();
       };
       const timer = window.setTimeout(() => {
-        if (audio.readyState >= 1) finish();
-        else finish(new DOMException('Audio failed to load', 'AbortError'));
-      }, 4000);
+        if (!hang && audio.readyState >= 1) finish();
+        else finish(new PlaybackTimeoutError());
+      }, mediaTimeoutMs());
       audio.addEventListener('loadedmetadata', onReady);
       audio.addEventListener('loadeddata', onReady);
       audio.addEventListener('canplay', onReady);
@@ -1151,26 +1166,36 @@ export class App {
       audio.loop = false;
       audio.src = url;
       audio.load();
-      if (audio.readyState >= 1) finish();
+      if (!hang && audio.readyState >= 1) finish();
     });
   }
 
   private startPlayback(): Promise<void> {
     const audio = this.audio;
+    const hang = mediaHang() === 'play';
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        if (audio.paused) reject(new DOMException('Audio failed to load', 'AbortError'));
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (error) reject(error);
         else resolve();
-      }, 4000);
+      };
+      const timer = window.setTimeout(() => {
+        if (!hang && !audio.paused) {
+          finish();
+          return;
+        }
+        audio.pause();
+        finish(new PlaybackTimeoutError());
+      }, mediaTimeoutMs());
+      if (hang) return;
       audio.play().then(
-        () => {
-          window.clearTimeout(timer);
-          resolve();
-        },
+        () => finish(),
         (error: unknown) => {
-          window.clearTimeout(timer);
-          if (!audio.paused) resolve();
-          else reject(error);
+          if (!audio.paused) finish();
+          else finish(error);
         },
       );
     });

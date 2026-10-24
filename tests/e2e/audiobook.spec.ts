@@ -3,6 +3,13 @@ import path from 'node:path';
 
 const fixture = path.resolve('tests/fixtures/outline.pdf');
 
+async function openOutline(page: import('playwright/test').Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Add' }).click();
+  await page.locator('#pdf-file').setInputFiles(fixture);
+  await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('pta-tts', 'stub');
@@ -104,6 +111,60 @@ test('invalidates cached audio when chapters are merged and split', async ({ pag
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   const split = await page.evaluate(() => document.querySelector('audio')?.duration ?? 0);
   expect(split).toBeLessThan(merged - 2);
+});
+
+test('keeps the Play button through the click', async ({ page }) => {
+  await openOutline(page);
+  await page.evaluate(() => {
+    const button = document.querySelector('button.play');
+    if (!(button instanceof HTMLButtonElement)) throw new Error('Play button missing');
+    button.addEventListener(
+      'click',
+      () => {
+        queueMicrotask(() => {
+          (window as unknown as { __playClick: { connected: boolean; same: boolean } }).__playClick = {
+            connected: button.isConnected,
+            same: document.querySelector('button.play') === button,
+          };
+        });
+      },
+      true,
+    );
+  });
+  await page.getByRole('button', { name: 'Play' }).click();
+  const during = await page.evaluate(
+    () => (window as unknown as { __playClick?: { connected: boolean; same: boolean } }).__playClick,
+  );
+  expect(during).toEqual({ connected: true, same: true });
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+});
+
+test('shows a retry when chapter audio does not load', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-media-timeout', '400');
+    localStorage.setItem('pta-hang-media', 'load');
+  });
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByText("Playback didn't start. Try again.")).toBeVisible();
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+});
+
+test('shows a retry when playback does not start', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-media-timeout', '400');
+    localStorage.setItem('pta-hang-media', 'play');
+  });
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByText("Playback didn't start. Try again.")).toBeVisible();
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
 });
 
 test('keeps the chapter after a mid-book references heading', async ({ page }) => {
