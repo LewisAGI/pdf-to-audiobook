@@ -1,3 +1,5 @@
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   MEDIA_TIMEOUT_MS,
@@ -33,5 +35,36 @@ describe('media playback timeouts', () => {
     expect(mediaHang({ DEV: false, MODE: 'test' }, read)).toBe('load');
     expect(mediaHang({ DEV: true, MODE: 'production' }, () => 'play')).toBe('play');
     expect(mediaHang({ DEV: false, MODE: 'test' }, () => 'pause')).toBeNull();
+  });
+
+  it('drops the media test hooks from a production bundle', async () => {
+    const root = fileURLToPath(new URL('../..', import.meta.url));
+    const bundled = async (dev: boolean, mode: string) => {
+      const result = await build({
+        absWorkingDir: root,
+        stdin: {
+          contents: `import { mediaHang, mediaTimeoutMs } from './src/lib/media-timeout.ts';\nconsole.log(mediaTimeoutMs(), mediaHang());\n`,
+          resolveDir: root,
+          sourcefile: 'media-timeout-entry.ts',
+        },
+        bundle: true,
+        write: false,
+        format: 'esm',
+        platform: 'browser',
+        minify: true,
+        define: {
+          'import.meta.env.DEV': dev ? 'true' : 'false',
+          'import.meta.env.MODE': JSON.stringify(mode),
+        },
+      });
+      return result.outputFiles[0]?.text ?? '';
+    };
+    const production = await bundled(false, 'production');
+    expect(production).not.toContain('pta-media-timeout');
+    expect(production).not.toContain('pta-hang-media');
+    expect(production).not.toContain('localStorage');
+    const development = await bundled(true, 'development');
+    expect(development).toContain('pta-media-timeout');
+    expect(development).toContain('pta-hang-media');
   });
 });

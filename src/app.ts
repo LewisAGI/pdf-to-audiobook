@@ -78,7 +78,6 @@ export class App {
   private index = 0;
   private sheet: Sheet = null;
   private busy: Busy = null;
-  private toast = '';
   private toastTimer = 0;
   private prefs: Preferences = {
     voice: 'af_heart',
@@ -96,6 +95,7 @@ export class App {
   private coverUrl = '';
   private generating = false;
   private playToken = 0;
+  private playbackTimer = 0;
   private priming = false;
   private silenceUrl = '';
   private unlockPromise: Promise<void> | null = null;
@@ -175,8 +175,7 @@ export class App {
   private render() {
     const sheet = this.sheetView();
     const main = this.book ? this.playerView() : this.libraryView();
-    const toast = this.toast ? `<p class="toast" role="status">${escapeHtml(this.toast)}</p>` : '';
-    this.root.innerHTML = `${main}${sheet}${toast}`;
+    this.root.innerHTML = `${main}${sheet}`;
     const elapsed = this.root.querySelector<HTMLElement>('#elapsed');
     if (elapsed) elapsed.dataset.saved = String(this.shownTime);
     const seek = this.root.querySelector<HTMLInputElement>('#seek');
@@ -704,6 +703,7 @@ export class App {
       return;
     }
     const token = ++this.playToken;
+    this.clearPlaybackTimer();
     this.speech.cancel();
     if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
     this.index = index;
@@ -732,7 +732,7 @@ export class App {
       this.objectUrl = url;
       this.unlockGeneration += 1;
       this.audio.playbackRate = clampRate(this.prefs.rate);
-      await this.loadSource(url);
+      await this.loadSource(url, token);
       if (token !== this.playToken) return;
       const point = sanitizeResume(
         { chapterIndex: index, time },
@@ -748,7 +748,8 @@ export class App {
         }
       }
       this.priming = false;
-      await this.startPlayback();
+      await this.startPlayback(token);
+      if (token !== this.playToken) return;
       this.render();
     } catch (error) {
       if (token !== this.playToken) return;
@@ -1131,7 +1132,12 @@ export class App {
     return pending;
   }
 
-  private loadSource(url: string): Promise<void> {
+  private clearPlaybackTimer() {
+    window.clearTimeout(this.playbackTimer);
+    this.playbackTimer = 0;
+  }
+
+  private loadSource(url: string, token: number): Promise<void> {
     const audio = this.audio;
     const hang = mediaHang() === 'load';
     return new Promise((resolve, reject) => {
@@ -1143,7 +1149,8 @@ export class App {
         audio.removeEventListener('loadeddata', onReady);
         audio.removeEventListener('canplay', onReady);
         audio.removeEventListener('error', onError);
-        window.clearTimeout(timer);
+        if (token !== this.playToken) return;
+        this.clearPlaybackTimer();
         if (error) reject(error);
         else resolve();
       };
@@ -1154,7 +1161,9 @@ export class App {
       const onError = () => {
         if (audio.readyState >= 1) finish();
       };
-      const timer = window.setTimeout(() => {
+      this.clearPlaybackTimer();
+      this.playbackTimer = window.setTimeout(() => {
+        if (token !== this.playToken) return;
         if (!hang && audio.readyState >= 1) finish();
         else finish(new PlaybackTimeoutError());
       }, mediaTimeoutMs());
@@ -1170,7 +1179,7 @@ export class App {
     });
   }
 
-  private startPlayback(): Promise<void> {
+  private startPlayback(token: number): Promise<void> {
     const audio = this.audio;
     const hang = mediaHang() === 'play';
     return new Promise((resolve, reject) => {
@@ -1178,11 +1187,14 @@ export class App {
       const finish = (error?: unknown) => {
         if (settled) return;
         settled = true;
-        window.clearTimeout(timer);
+        if (token !== this.playToken) return;
+        this.clearPlaybackTimer();
         if (error) reject(error);
         else resolve();
       };
-      const timer = window.setTimeout(() => {
+      this.clearPlaybackTimer();
+      this.playbackTimer = window.setTimeout(() => {
+        if (token !== this.playToken) return;
         if (!hang && !audio.paused) {
           finish();
           return;
@@ -1222,14 +1234,18 @@ export class App {
   }
 
   private showToast(message: string) {
-    this.toast = message;
+    this.announce(message);
     this.render();
     window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => {
-      this.toast = '';
-      const node = this.root.querySelector('.toast');
-      node?.remove();
+      this.announce('');
     }, 3200);
+  }
+
+  private announce(message: string) {
+    const live = document.querySelector('#live-status');
+    if (!live) return;
+    live.textContent = message;
   }
 
   private rateLabel(): string {

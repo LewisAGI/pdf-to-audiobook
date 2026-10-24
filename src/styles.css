@@ -223,6 +223,10 @@ textarea { min-height: 180px; resize: vertical; }
   z-index: 40;
   max-width: min(90vw, 360px);
 }
+.toast:empty {
+  padding: 0;
+  background: transparent;
+}
 .tooltip {
   position: fixed;
   z-index: 50;

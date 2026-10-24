@@ -27,12 +27,11 @@ function readFlag(read: (key: string) => string | null, key: string): string {
   }
 }
 
-export function mediaTimeoutMs(
-  env: Env = import.meta.env,
-  read: (key: string) => string | null = (key) => localStorage.getItem(key),
-): number {
+export function mediaTimeoutMs(env: Env = import.meta.env, read?: (key: string) => string | null): number {
+  // import.meta.env is folded in the production build so the localStorage hook is removed.
+  if (!(import.meta.env.DEV || import.meta.env.MODE === 'test')) return MEDIA_TIMEOUT_MS;
   if (!testSeam(env)) return MEDIA_TIMEOUT_MS;
-  const raw = readFlag(read, 'pta-media-timeout');
+  const raw = readFlag(read ?? ((key) => localStorage.getItem(key)), 'pta-media-timeout');
   if (!raw) return MEDIA_TIMEOUT_MS;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) return MEDIA_TIMEOUT_MS;
@@ -41,12 +40,10 @@ export function mediaTimeoutMs(
 
 export type MediaHang = 'load' | 'play';
 
-export function mediaHang(
-  env: Env = import.meta.env,
-  read: (key: string) => string | null = (key) => localStorage.getItem(key),
-): MediaHang | null {
+export function mediaHang(env: Env = import.meta.env, read?: (key: string) => string | null): MediaHang | null {
+  if (!(import.meta.env.DEV || import.meta.env.MODE === 'test')) return null;
   if (!testSeam(env)) return null;
-  const flag = readFlag(read, 'pta-hang-media');
+  const flag = readFlag(read ?? ((key) => localStorage.getItem(key)), 'pta-hang-media');
   if (flag === 'load' || flag === 'play') return flag;
   return null;
 }
