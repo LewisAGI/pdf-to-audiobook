@@ -3,6 +3,52 @@ import path from 'node:path';
 
 const fixture = path.resolve('tests/fixtures/outline.pdf');
 
+async function openOutline(page: import('playwright/test').Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Add' }).click();
+  await page.locator('#pdf-file').setInputFiles(fixture);
+  await expect(page.locator('.chapter-name')).toHaveText('Arrival', { timeout: 30_000 });
+}
+
+async function hangFirstChapterPlay(page: import('playwright/test').Page) {
+  await page.addInitScript(() => {
+    const timeout = 6_000;
+    const delay = 5_000;
+    localStorage.setItem('pta-media-timeout', String(timeout));
+    const originalPlay = HTMLMediaElement.prototype.play;
+    const originalPause = HTMLMediaElement.prototype.pause;
+    let chapterPlays = 0;
+    let interrupt: (() => void) | null = null;
+    HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+      if (this.loop) return originalPlay.call(this);
+      chapterPlays += 1;
+      const mark = window as unknown as { __chapterPlays: number; __oldDeadline: number };
+      mark.__chapterPlays = chapterPlays;
+      if (chapterPlays === 1) {
+        mark.__oldDeadline = Date.now() + timeout;
+        return new Promise(() => undefined);
+      }
+      return new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          interrupt = null;
+          originalPlay.call(this).then(resolve, reject);
+        }, delay);
+        interrupt = () => {
+          window.clearTimeout(timer);
+          reject(new DOMException('The play() request was interrupted by a call to pause().', 'AbortError'));
+        };
+      });
+    };
+    HTMLMediaElement.prototype.pause = function (this: HTMLMediaElement) {
+      const pending = interrupt;
+      interrupt = null;
+      const result = originalPause.call(this);
+      pending?.();
+      return result;
+    };
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('pta-tts', 'stub');
@@ -104,6 +150,101 @@ test('invalidates cached audio when chapters are merged and split', async ({ pag
   await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
   const split = await page.evaluate(() => document.querySelector('audio')?.duration ?? 0);
   expect(split).toBeLessThan(merged - 2);
+});
+
+test('keeps the Play button through the click', async ({ page }) => {
+  await openOutline(page);
+  const live = page.locator('#live-status');
+  await expect(live).toHaveAttribute('aria-live', 'assertive');
+  await expect(page.locator('#app #live-status')).toHaveCount(0);
+  await page.evaluate(() => {
+    const button = document.querySelector('button.play');
+    if (!(button instanceof HTMLButtonElement)) throw new Error('Play button missing');
+    const rec = () => {
+      (window as unknown as { __playClick: { connected: boolean; same: boolean } }).__playClick = {
+        connected: button.isConnected,
+        same: document.querySelector('button.play') === button,
+      };
+    };
+    button.addEventListener(
+      'click',
+      () => {
+        document.addEventListener('click', () => queueMicrotask(rec), { once: true });
+      },
+      true,
+    );
+  });
+  await page.getByRole('button', { name: 'Play' }).click();
+  const during = await page.evaluate(
+    () => (window as unknown as { __playClick?: { connected: boolean; same: boolean } }).__playClick,
+  );
+  expect(during).toEqual({ connected: true, same: true });
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+});
+
+test('keeps a Play retry going after the first play hangs', async ({ page }) => {
+  await hangFirstChapterPlay(page);
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await page.waitForFunction(() => (window as unknown as { __chapterPlays?: number }).__chapterPlays === 1);
+  await page.waitForTimeout(1_500);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 15_000 });
+  await page.waitForFunction(() => Date.now() > (window as unknown as { __oldDeadline: number }).__oldDeadline + 400);
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.locator('#live-status')).toHaveText('');
+  await expect(page.getByText("Playback didn't start. Try again.")).toHaveCount(0);
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+});
+
+test('keeps a chapter jump playing after the first play hangs', async ({ page }) => {
+  await hangFirstChapterPlay(page);
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  await page.waitForFunction(() => (window as unknown as { __chapterPlays?: number }).__chapterPlays === 1);
+  await page.waitForTimeout(1_500);
+  await page.getByRole('button', { name: 'Chapters' }).click();
+  await page.getByRole('button', { name: 'Departure' }).click();
+  await expect(page.locator('.chapter-name')).toHaveText('Departure');
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible({ timeout: 15_000 });
+  await page.waitForFunction(() => Date.now() > (window as unknown as { __oldDeadline: number }).__oldDeadline + 400);
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.locator('.chapter-name')).toHaveText('Departure');
+  await expect(page.getByText("Playback didn't start. Try again.")).toHaveCount(0);
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+});
+
+test('shows a retry when chapter audio does not load', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-media-timeout', '400');
+    localStorage.setItem('pta-hang-media', 'load');
+  });
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  const live = page.locator('#live-status');
+  await expect(live).toHaveText("Playback didn't start. Try again.");
+  await expect(live).toHaveAttribute('aria-live', 'assertive');
+  await expect(page.locator('#app #live-status')).toHaveCount(0);
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+});
+
+test('shows a retry when playback does not start', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pta-media-timeout', '400');
+    localStorage.setItem('pta-hang-media', 'play');
+  });
+  await openOutline(page);
+  await page.getByRole('button', { name: 'Play' }).click();
+  const live = page.locator('#live-status');
+  await expect(live).toHaveText("Playback didn't start. Try again.");
+  await expect(live).toHaveAttribute('aria-live', 'assertive');
+  await expect(page.locator('main.shell')).toHaveAttribute('data-engine', 'kokoro');
+  await expect(page.getByText('Neural voice unavailable')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
 });
 
 test('keeps the chapter after a mid-book references heading', async ({ page }) => {
