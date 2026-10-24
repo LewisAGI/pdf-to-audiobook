@@ -2,7 +2,7 @@
   "name": "pdf-to-audiobook",
   "version": "1.0.0",
   "private": false,
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "engines": {
     "node": ">=22"

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
@@ -21,6 +22,28 @@ describe('response headers', () => {
     expect(policy).toContain("connect-src 'self' https: blob:");
     expect(policy).toContain("worker-src 'self' blob:");
     expect(policy).toContain("object-src 'none'");
+  });
+
+  it('licenses the application under GPL-3.0-or-later', () => {
+    const license = readFileSync(new URL('../../LICENSE', import.meta.url));
+    expect(createHash('sha256').update(license).digest('hex')).toBe('3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986');
+    expect(license.toString('utf8')).toContain('GNU GENERAL PUBLIC LICENSE');
+    expect(license.toString('utf8')).toContain('Version 3, 29 June 2007');
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { license: string };
+    expect(pkg.license).toBe('GPL-3.0-or-later');
+    const lock = JSON.parse(readFileSync(new URL('../../package-lock.json', import.meta.url), 'utf8')) as {
+      packages: { '': { license: string } };
+    };
+    expect(lock.packages[''].license).toBe('GPL-3.0-or-later');
+    const readme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
+    expect(readme).toContain('GPL-3.0-or-later');
+    const notices = readFileSync(new URL('../../public/THIRD_PARTY_NOTICES.txt', import.meta.url), 'utf8').split('\n');
+    expect(notices[3]).toBe(
+      'This application is licensed under GPL-3.0-or-later. Source: https://github.com/LewisAGI/pdf-to-audiobook. The components below keep their own licenses.',
+    );
+    expect(notices.slice(0, 6).join('\n')).not.toMatch(/MIT/);
+    const vite = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
+    expect(vite).toContain('THIRD_PARTY_NOTICES.txt');
   });
 
   it('publishes third-party notices for lamejs, eSpeak NG, and ffmpeg', () => {
