@@ -23,6 +23,17 @@ describe('response headers', () => {
     expect(policy).toContain("object-src 'none'");
   });
 
+  it('licenses the application under GPL-3.0-or-later', () => {
+    const license = readFileSync(new URL('../../LICENSE', import.meta.url), 'utf8');
+    expect(license).toContain('GNU GENERAL PUBLIC LICENSE');
+    expect(license).toContain('Version 3, 29 June 2007');
+    expect(license).toContain('END OF TERMS AND CONDITIONS');
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { license: string };
+    expect(pkg.license).toBe('GPL-3.0-or-later');
+    const vite = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
+    expect(vite).toContain('THIRD_PARTY_NOTICES.txt');
+  });
+
   it('publishes third-party notices for lamejs, eSpeak NG, and ffmpeg', () => {
     const notices = readFileSync(new URL('../../public/THIRD_PARTY_NOTICES.txt', import.meta.url), 'utf8');
     expect(notices).toMatch(/lamejs/i);

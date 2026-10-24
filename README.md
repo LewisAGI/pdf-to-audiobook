@@ -2,7 +2,9 @@
 
 A phone-first audiobook reader that runs entirely in the browser. Upload a PDF or paste article text. The page is parsed, cleaned, split into chapters, and read aloud on your device. Books, generated audio, and playback position stay in IndexedDB and the origin private file system. There is no application server.
 
-The license is MIT.
+## License
+
+GPL-3.0-or-later. The application bundles eSpeak NG (GPL-3.0), the ffmpeg core (GPL-2.0-or-later), and lamejs (LGPL-3.0). The terms are in `LICENSE`. Third-party notices stay in `public/THIRD_PARTY_NOTICES.txt`.
 
 ## What it does
 
